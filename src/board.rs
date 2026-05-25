@@ -180,7 +180,7 @@ impl Board {
             let rank_char = parts[3].chars().nth(1).unwrap();
 
             let file_idx = (file_char as u8 - b'a') as usize;
-            let rank_idx = (rank_char as u8 - b'a') as usize;
+            let rank_idx = (rank_char as u8 - b'1') as usize;
 
             board.en_passant = Some(SQUARES[rank_idx * 8 + file_idx]);
         }
@@ -196,6 +196,69 @@ impl Board {
         board
     }
 
+    // constructs FEN String from Board
+    pub fn to_fen(&self) -> String {
+        let mut fen = String::new();
+
+        for rank in (0..8).rev() {
+            let mut empty_count = 0;
+            for file in 0..8 {
+                let sq = SQUARES[rank * 8 + file];
+                
+                if let Some(pt) = self.piece_at(sq) {
+                    if empty_count > 0 {
+                        fen.push_str(&empty_count.to_string());
+                        empty_count = 0;
+                    }
+                    
+                    let mut c = match pt {
+                        PieceType::Pawn   => 'p',
+                        PieceType::Knight => 'n',
+                        PieceType::Bishop => 'b',
+                        PieceType::Rook   => 'r',
+                        PieceType::Queen  => 'q',
+                        PieceType::King   => 'k',
+                    };
+                    
+                    if self.occupancies[Color::White as usize].is_occupied(sq) {
+                        c = c.to_ascii_uppercase();
+                    }
+                    fen.push(c);
+                } else {
+                    empty_count += 1;
+                }
+            }
+            if empty_count > 0 {
+                fen.push_str(&empty_count.to_string());
+            }
+            if rank > 0 {
+                fen.push('/');
+            }
+        }
+
+        fen.push_str(match self.side_to_move {
+            Color::White => " w ",
+            Color::Black => " b ",
+        });
+
+        let mut castling = String::new();
+        if (self.castling_rights & 1) != 0 { castling.push('K'); }
+        if (self.castling_rights & 2) != 0 { castling.push('Q'); }
+        if (self.castling_rights & 4) != 0 { castling.push('k'); }
+        if (self.castling_rights & 8) != 0 { castling.push('q'); }
+        if castling.is_empty() { castling.push('-'); }
+        fen.push_str(&format!("{} ", castling));
+
+        match self.en_passant {
+            Some(sq) => fen.push_str(&format!("{:?} ", sq).to_lowercase()),
+            None => fen.push_str("- "),
+        }
+
+        fen.push_str(&format!("{} {}", self.halfmove_clock, self.fullmove_number));
+        fen
+    }
+
+    // prints the Board in a formatted grid alongside necessary information
     pub fn print(&self) {
         let piece_chars = ['P', 'N', 'B', 'R', 'Q', 'K'];
 
@@ -247,20 +310,7 @@ impl Board {
             Some(sq) => format!("{:?}", sq),
             None => "-".to_string(),
         });
-    }
-
-    // helper method to recalculate the 3 master occupancy bitboards
-    pub fn update_occupancies(&mut self) {
-        self.occupancies[0] = Bitboard::empty();
-        self.occupancies[1] = Bitboard::empty();
-        
-        for pt in 0..6 {
-            self.occupancies[0] |= self.pieces[Color::White as usize][pt];
-            self.occupancies[1] |= self.pieces[Color::Black as usize][pt];
-        }
-        
-        self.occupancies[2] = self.occupancies[0] | self.occupancies[1];
-    }
+    } 
 
     // takes a Square and checks Bitboards and returns what piece is sitting there
     pub fn piece_at(&self, sq: Square) -> Option<PieceType> {
@@ -277,6 +327,35 @@ impl Board {
         }
 
         None
+    }
+
+    // helper method to recalculate the 3 master occupancy bitboards
+    pub fn update_occupancies(&mut self) {
+        self.occupancies[0] = Bitboard::empty();
+        self.occupancies[1] = Bitboard::empty();
+        
+        for pt in 0..6 {
+            self.occupancies[0] |= self.pieces[Color::White as usize][pt];
+            self.occupancies[1] |= self.pieces[Color::Black as usize][pt];
+        }
+        
+        self.occupancies[2] = self.occupancies[0] | self.occupancies[1];
+    }
+
+    // removes a piece from the board and updates master masks
+    pub fn remove_piece(&mut self, sq: Square, side: Color, pt: PieceType) {
+        self.pieces[side as usize][pt as usize] = self.pieces[side as usize][pt as usize].clear_bit(sq);
+
+        self.occupancies[side as usize] = self.occupancies[side as usize].clear_bit(sq);
+        self.occupancies[2] = self.occupancies[2].clear_bit(sq);
+    }
+
+    // adds a piece to the board and updates the master masks
+    pub fn add_piece(&mut self, sq: Square, side: Color, pt: PieceType) {
+        self.pieces[side as usize][pt as usize] = self.pieces[side as usize][pt as usize].set_bit(sq);
+
+        self.occupancies[side as usize] = self.occupancies[side as usize].set_bit(sq);
+        self.occupancies[2] = self.occupancies[2].set_bit(sq);
     }
 }
 
