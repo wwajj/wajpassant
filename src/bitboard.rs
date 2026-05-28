@@ -35,7 +35,7 @@ impl Bitboard {
     }
 
     // constructs Bitboard of 0s
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self(0)
     }
 
@@ -138,6 +138,7 @@ impl Bitboard {
     }
 }
 
+// implements bitwise & for Bitboards
 impl BitAnd for Bitboard {
     type Output = Self;
 
@@ -146,7 +147,7 @@ impl BitAnd for Bitboard {
     }
 }
 
-
+// implements bitwise | for Bitboards
 impl BitOr for Bitboard {
     type Output = Self;
 
@@ -155,6 +156,7 @@ impl BitOr for Bitboard {
     }
 }
 
+// implements bitwise ^ for Bitboards
 impl BitXor for Bitboard {
     type Output = Self;
 
@@ -163,6 +165,7 @@ impl BitXor for Bitboard {
     }
 }
 
+// implements bitwise ! for Bitboards
 impl Not for Bitboard {
     type Output = Self;
 
@@ -171,6 +174,7 @@ impl Not for Bitboard {
     }
 }
 
+// implements bitwise << for Bitboards
 impl Shl<usize> for Bitboard {
     type Output = Self;
 
@@ -179,6 +183,7 @@ impl Shl<usize> for Bitboard {
     }
 }
 
+// implements bitwise >> for Bitboards
 impl Shr<usize> for Bitboard {
     type Output = Self;
 
@@ -187,18 +192,21 @@ impl Shr<usize> for Bitboard {
     }
 }
 
+// implements bitwise &= for Bitboards
 impl BitAndAssign for Bitboard {
     fn bitand_assign(&mut self, rhs: Self) {
         self.0 &= rhs.0;
     }
 }
 
+// implements bitwise |= for Bitboards
 impl BitOrAssign for Bitboard {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
     }
 }
 
+// implements bitwise ^= for Bitboards
 impl BitXorAssign for Bitboard {
     fn bitxor_assign(&mut self, rhs: Self) {
         self.0 ^= rhs.0;
