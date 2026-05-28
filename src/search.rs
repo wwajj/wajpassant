@@ -9,6 +9,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Instant, Duration};
 
 use crate::board::{Board, PieceType};
+use crate::eval::EvalParams;
 use crate::hh::HistoryHierarchy;
 use crate::moves::{Move, FLAG_EN_PASSANT, FLAG_CAPTURE};
 use crate::tt::{TTFlag, TranspositionTable};
@@ -34,11 +35,13 @@ pub fn search_best_move(
     mut board: Board, 
     depth: u8, 
     abort_flag: Arc<AtomicBool>, 
-    time_limit: Option<Duration>
+    time_limit: Option<Duration>,
+    quiet: bool
 ) -> Option<Move> {
     let mut best_move_so_far: Option<Move> = None;
     let mut tt = TranspositionTable::new(32);
     let mut hh = HistoryHierarchy::new();
+    let params = EvalParams::new();
     
     let start_time = Instant::now();
     let mut nodes: u64 = 0;
@@ -54,13 +57,14 @@ pub fn search_best_move(
         let beta = INFINITY;
 
         for mv in moves {
-            if !board.make_move(mv) {
+            if !board.make_move(mv, &params) {
                 continue;
             }
 
             let score = -negamax(
                 &mut board, current_depth - 1, -beta, -alpha, 1, 
-                &mut tt, &mut hh, &abort_flag, start_time, time_limit, &mut nodes
+                &mut tt, &mut hh, &abort_flag, start_time, time_limit,
+                &mut nodes, &params
             );
             board.unmake_move(mv);
 
@@ -91,19 +95,21 @@ pub fn search_best_move(
             nodes
         };
 
-        if best_score.abs() > MATE_VALUE {
-            let mate_in_plies = INFINITY - best_score.abs();
-            let mate_in_moves = (mate_in_plies + 1) / 2;
-            let sign = if best_score > 0 { 1 } else { -1 };
-            println!(
-                "info depth {} score mate {} nodes {} nps {} time {}",
-                current_depth, mate_in_moves * sign, nodes, nps, elapsed
-            );
-        } else {
-            println!(
-                "info depth {} score cp {} nodes {} nps {} time {}",
-                current_depth, best_score, nodes, nps, elapsed
-            );
+        if !quiet {
+            if best_score.abs() > MATE_VALUE {
+                let mate_in_plies = INFINITY - best_score.abs();
+                let mate_in_moves = (mate_in_plies + 1) / 2;
+                let sign = if best_score > 0 { 1 } else { -1 };
+                println!(
+                    "info depth {} score mate {} nodes {} nps {} time {}",
+                    current_depth, mate_in_moves * sign, nodes, nps, elapsed
+                );
+            } else {
+                println!(
+                    "info depth {} score cp {} nodes {} nps {} time {}",
+                    current_depth, best_score, nodes, nps, elapsed
+                );
+            }
         }
     }
 
@@ -114,7 +120,8 @@ pub fn search_best_move(
 fn negamax(
     board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32, 
     tt: &mut TranspositionTable, hh: &mut HistoryHierarchy,
-    abort_flag: &Arc<AtomicBool>, start_time: Instant, time_limit: Option<Duration>, nodes: &mut u64
+    abort_flag: &Arc<AtomicBool>, start_time: Instant, time_limit: Option<Duration>,
+    nodes: &mut u64, params: &EvalParams
 ) -> i32 {
     
     *nodes += 1;
@@ -135,7 +142,7 @@ fn negamax(
     }
 
     if depth == 0 {
-        return quiescence_search(board, alpha, beta, tt);
+        return quiescence_search(board, alpha, beta, tt, params);
     }
 
     let hash = board.hash_history.last().copied().unwrap_or(0);
@@ -154,14 +161,14 @@ fn negamax(
     let king_bb = board.pieces[us as usize][PieceType::King as usize];
     let king_sq = king_bb.get_lsb();
     let in_check = board.is_square_attacked(king_sq, them);
-    let eval = board.evaluate(alpha, beta);
+    let eval = board.evaluate(alpha, beta, params);
 
     if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1) {
         if eval >= beta {
             board.make_null_move();
             let nm_score = -negamax(
                 board, depth - 1 - NMP_R, -beta, -beta + 1, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes
+                tt, hh, abort_flag, start_time, time_limit, nodes, params
             );
             board.unmake_null_move();
             
@@ -181,7 +188,7 @@ fn negamax(
     let futility_margin = 150 + (depth as i32 * 100);
 
     for mv in moves {
-        if !board.make_move(mv) {
+        if !board.make_move(mv, params) {
             continue; 
         }
         legal_moves += 1;
@@ -212,20 +219,20 @@ fn negamax(
 
             score = -negamax(
                 board, depth - 1 - lmr_r, -beta, -alpha, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes
+                tt, hh, abort_flag, start_time, time_limit, nodes, params
             );
 
             if score > alpha {
                 score = -negamax(
                     board, depth - 1, -beta, -alpha, ply + 1, 
-                    tt, hh, abort_flag, start_time, time_limit, nodes
+                    tt, hh, abort_flag, start_time, time_limit, nodes, params
                 );
             }
         } 
         else {
             score = -negamax(
                 board, depth - 1 + extension, -beta, -alpha, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes
+                tt, hh, abort_flag, start_time, time_limit, nodes, params
             );
         }
         
@@ -265,7 +272,8 @@ fn negamax(
 
 /// Loops through all captures to calculate tactical positions at the end of
 /// a negamax search
-fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut TranspositionTable) -> i32 {
+fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32,
+    tt: &mut TranspositionTable, params: &EvalParams) -> i32 {
     let hash = board.hash_history.last().copied().unwrap_or(0);
     let mut tt_move = None;
     if let Some(entry) = tt.read(hash, QSEARCH_DEPTH) {
@@ -278,7 +286,7 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut Tran
         }
     }
 
-    let stand_pat = board.evaluate(alpha, beta);
+    let stand_pat = board.evaluate(alpha, beta, params);
     
     if stand_pat >= beta {
         return beta;
@@ -305,11 +313,11 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut Tran
     for mv in captures {
         if (static_exchange_evaluation(board, mv) < 0) && (!mv.is_promotion()) { continue; }
 
-        if !board.make_move(mv) {
+        if !board.make_move(mv, params) {
             continue; 
         }
 
-        let score = -quiescence_search(board, -beta, -alpha, tt);
+        let score = -quiescence_search(board, -beta, -alpha, tt, params);
         board.unmake_move(mv);
 
         if score >= beta {

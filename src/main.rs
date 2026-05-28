@@ -3,6 +3,7 @@ use std::fs::File;
 use wajpassant::attacks::init_attacks;
 use wajpassant::board::Board; 
 use wajpassant::cli::cli_loop;
+use wajpassant::eval::EvalParams;
 use wajpassant::search::init_lmr_table;
 use wajpassant::uci::uci_loop;
 use wajpassant::zobrist::init_zobrist;
@@ -13,6 +14,7 @@ fn main() {
     init_zobrist();
 
     let args: Vec<String> = env::args().collect();
+    let params = EvalParams::new();
 
     if args.contains(&String::from("--cli")) {
         cli_loop();
@@ -22,7 +24,7 @@ fn main() {
         if let Some(depth_str) = args.get(pos + 1) {
             if let Ok(depth) = depth_str.parse::<u8>() {
                 let mut board = match args.get(pos + 2) {
-                    Some(fen) => Board::from_fen(fen),
+                    Some(fen) => Board::from_fen(fen, &params),
                     None => Board::default(),
                 };
                 let nodes = board.perft(depth);
@@ -37,7 +39,7 @@ fn main() {
             if let Ok(depth) = depth_str.parse::<u8>() {
                 if let Ok(mut file) = File::create(file_path) {
                     let mut board = match args.get(pos + 3) {
-                        Some(fen) => Board::from_fen(fen),
+                        Some(fen) => Board::from_fen(fen, &params),
                         None => Board::default(),
                     };
                     

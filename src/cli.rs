@@ -5,12 +5,14 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::board::{Board, Color, PieceType};
+use crate::eval::EvalParams;
 use crate::search::search_best_move;
 use crate::moves::Move;
 
 pub fn cli_loop() {
+    let params = EvalParams::new();
     let mut board = Board::default();
-    board.init_eval();
+    board.init_eval(&params);
 
     println!("WajPassant CLI");
     print!("Do you want to play as White (w) or Black (b)? ");
@@ -43,7 +45,7 @@ pub fn cli_loop() {
             }
 
             if let Some(user_move) = parse_user_move(&mut board, move_str) {
-                if !board.make_move(user_move) {
+                if !board.make_move(user_move, &params) {
                     println!("Move left King in check. Try again.");
                 }
             } else {
@@ -52,9 +54,9 @@ pub fn cli_loop() {
         } else {
             let abort_flag = Arc::new(AtomicBool::new(false));
             
-            if let Some(best_move) = search_best_move(board.clone(), 7, abort_flag, None) {
+            if let Some(best_move) = search_best_move(board.clone(), 7, abort_flag, None, false) {
                 println!("WajPassant plays: {}", format_move(best_move)); 
-                board.make_move(best_move); // Actually update the CLI board state
+                board.make_move(best_move, &params); // Actually update the CLI board state
             } else {
                 println!("Game Over! WajPassant has no legal moves.");
                 break;

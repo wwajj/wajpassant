@@ -10,13 +10,15 @@ use std::thread;
 use std::time::Duration;
 
 use crate::board::{Board, PieceType, Color};
+use crate::eval::EvalParams;
 use crate::search::search_best_move;
 use crate::moves::Move;
 
 pub fn uci_loop() {
     let stdin = io::stdin();
+    let params = EvalParams::new();
     let mut board = Board::default();
-    board.init_eval();
+    board.init_eval(&params);
 
     let mut abort_flag = Arc::new(AtomicBool::new(false));
     let mut search_thread: Option<thread::JoinHandle<()>> = None;
@@ -42,10 +44,10 @@ pub fn uci_loop() {
             }
             "ucinewgame" => {
                 board = Board::default();
-                board.init_eval();
+                board.init_eval(&params);
             }
             "position" => {
-                parse_position(&mut board, &tokens);
+                parse_position(&mut board, &tokens, &params);
             }
             "go" => {
                 abort_flag.store(true, Ordering::Relaxed);
@@ -75,12 +77,12 @@ pub fn uci_loop() {
 }
 
 /// Parses the "position" command from the GUI.
-fn parse_position(board: &mut Board, tokens: &[&str]) {
+fn parse_position(board: &mut Board, tokens: &[&str], params: &EvalParams) {
     let mut current_idx = 1;
 
     if current_idx < tokens.len() && tokens[current_idx] == "startpos" {
         *board = Board::default();
-        board.init_eval();
+        board.init_eval(params);
         current_idx += 1;
     } else if current_idx < tokens.len() && tokens[current_idx] == "fen" {
         current_idx += 1;
@@ -90,8 +92,7 @@ fn parse_position(board: &mut Board, tokens: &[&str]) {
             fen.push(' ');
             current_idx += 1;
         }
-        *board = Board::from_fen(fen.trim()); 
-        board.init_eval();
+        *board = Board::from_fen(fen.trim(), params); 
     }
 
     if current_idx < tokens.len() && tokens[current_idx] == "moves" {
@@ -99,7 +100,7 @@ fn parse_position(board: &mut Board, tokens: &[&str]) {
         while current_idx < tokens.len() {
             let move_str = tokens[current_idx];
             if let Some(mv) = parse_uci_move(board, move_str) {
-                board.make_move(mv);
+                board.make_move(mv, params);
             }
             current_idx += 1;
         }
@@ -148,7 +149,7 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
     let search_board = board.clone();
 
     thread::spawn(move || {
-        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time) {
+        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time, true) {
             println!("bestmove {}", format_uci_move(mv));
         } else {
             println!("bestmove 0000");

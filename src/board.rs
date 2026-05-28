@@ -8,7 +8,7 @@ use std::io::Write;
 
 use crate::attacks::{WHITE_PAWN_ATTACKS, BLACK_PAWN_ATTACKS, KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
-use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE, MOBILITY_WEIGHTS_MG, MOBILITY_WEIGHTS_EG};
+use crate::eval::EvalParams;
 use crate::moves::*;
 use crate::movegen::{THIRD_RANK, SIXTH_RANK};
 use crate::zobrist::{ZOBRIST_PIECES, ZOBRIST_SIDE, ZOBRIST_CASTLING, ZOBRIST_EN_PASSANT};
@@ -231,7 +231,7 @@ impl Board {
     }
 
     /// Parses a standard FEN string and returns a populated `Board`.
-    pub fn from_fen(fen: &str) -> Self {
+    pub fn from_fen(fen: &str, params: &EvalParams) -> Self {
         let mut board = Self::empty();
 
         let parts: Vec<&str> = fen.split_whitespace().collect();
@@ -301,7 +301,7 @@ impl Board {
         }
 
         board.update_occupancies();
-        board.init_eval();
+        board.init_eval(params);
 
         let initial_hash = board.calculate_hash();
         board.hash_history.push(initial_hash);
@@ -515,7 +515,7 @@ impl Board {
 
     /// Executes a move on the board
     /// Returns `true` if the move is legal, `false` if the move leaves the King in check
-    pub fn make_move(&mut self, mv: Move) -> bool {
+    pub fn make_move(&mut self, mv: Move, params: &EvalParams) -> bool {
         let start = mv.get_start();
         let target = mv.get_target();
         let flag = mv.get_flags();
@@ -540,8 +540,8 @@ impl Board {
         let move_mask = (1u64 << start as u64) | (1u64 << target as u64);
         self.pieces[us as usize][moved as usize] ^= Bitboard(move_mask);
 
-        self.remove_eval(us, moved, start);
-        self.add_eval(us, moved, target);
+        self.remove_eval(us, moved, start, params);
+        self.add_eval(us, moved, target, params);
 
         let target_mask = Bitboard(1u64 << target as u64);
         match flag {
@@ -549,7 +549,7 @@ impl Board {
             
             FLAG_CAPTURE => {
                 self.pieces[them as usize][captured.unwrap() as usize] ^= target_mask;
-                self.remove_eval(them, captured.unwrap(), target);
+                self.remove_eval(them, captured.unwrap(), target, params);
             },
             FLAG_PROMO_N | FLAG_PROMO_B | FLAG_PROMO_R | FLAG_PROMO_Q => {
                 let promo_piece = mv.get_promotion_piece().unwrap();
@@ -557,8 +557,8 @@ impl Board {
                 self.pieces[us as usize][promo_piece as usize] ^= target_mask;
                 
                 // We moved a pawn to the target square in step 3, so remove it, then add the promoted piece
-                self.remove_eval(us, PieceType::Pawn, target);
-                self.add_eval(us, promo_piece, target);
+                self.remove_eval(us, PieceType::Pawn, target, params);
+                self.add_eval(us, promo_piece, target, params);
             },
             FLAG_CAPTURE_PROMO_N | FLAG_CAPTURE_PROMO_B | FLAG_CAPTURE_PROMO_R | FLAG_CAPTURE_PROMO_Q => {
                 let promo_piece = mv.get_promotion_piece().unwrap();
@@ -566,15 +566,15 @@ impl Board {
                 self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
                 self.pieces[us as usize][promo_piece as usize] ^= target_mask;
                 
-                self.remove_eval(them, captured.unwrap(), target);
-                self.remove_eval(us, PieceType::Pawn, target);
-                self.add_eval(us, promo_piece, target);
+                self.remove_eval(them, captured.unwrap(), target, params);
+                self.remove_eval(us, PieceType::Pawn, target, params);
+                self.add_eval(us, promo_piece, target, params);
             },
             FLAG_EN_PASSANT => {
                 let capture_sq = if us == Color::White { (target as usize) - 8 } else { (target as usize) + 8 };
                 self.pieces[them as usize][PieceType::Pawn as usize] ^= Bitboard(1u64 << capture_sq as u64);
                 
-                self.remove_eval(them, PieceType::Pawn, SQUARES[capture_sq]);
+                self.remove_eval(them, PieceType::Pawn, SQUARES[capture_sq], params);
             },
             FLAG_KING_CASTLE => {
                 let rook_mask = 0b1010_0000;
@@ -582,8 +582,8 @@ impl Board {
                 self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
                 
                 let (r_start, r_target) = if us == Color::White { (7, 5) } else { (63, 61) }; // H1->F1 or H8->F8
-                self.remove_eval(us, PieceType::Rook, SQUARES[r_start]);
-                self.add_eval(us, PieceType::Rook, SQUARES[r_target]);
+                self.remove_eval(us, PieceType::Rook, SQUARES[r_start], params);
+                self.add_eval(us, PieceType::Rook, SQUARES[r_target], params);
             },
             FLAG_QUEEN_CASTLE => {
                 let rook_mask = 0b0000_1001;
@@ -591,8 +591,8 @@ impl Board {
                 self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
                 
                 let (r_start, r_target) = if us == Color::White { (0, 3) } else { (56, 59) }; // A1->D1 or A8->D8
-                self.remove_eval(us, PieceType::Rook, SQUARES[r_start]);
-                self.add_eval(us, PieceType::Rook, SQUARES[r_target]);
+                self.remove_eval(us, PieceType::Rook, SQUARES[r_start], params);
+                self.add_eval(us, PieceType::Rook, SQUARES[r_target], params);
             },
             _ => panic!("Invalid move flag encountered during make move."),
         };
@@ -934,11 +934,12 @@ impl Board {
         }
 
         let mut nodes: u64 = 0;
+        let dummy_params = EvalParams::new();
         
         let moves = self.generate_all_moves(); 
 
         for mv in moves {
-            if self.make_move(mv) {
+            if self.make_move(mv, &dummy_params) {
                 nodes += self.perft(depth - 1);
                 self.unmake_move(mv);
             }
@@ -955,10 +956,11 @@ impl Board {
         }
 
         let mut nodes: u64 = 0;
+        let dummy_params = EvalParams::new();
         let moves = self.generate_all_moves(); 
 
         for mv in moves {
-            if self.make_move(mv) {
+            if self.make_move(mv, &dummy_params) {
                 let start_idx = mv.get_start() as usize;
                 let target_idx = mv.get_target() as usize;
                 
@@ -984,8 +986,8 @@ impl Board {
         nodes
     }
 
-    /// Calculates the static evaluation from scratch.
-    pub fn init_eval(&mut self) {
+    /// Calculates the static evaluation from scratch using dynamic EvalParams.
+    pub fn init_eval(&mut self, params: &EvalParams) {
         self.mg_score = 0;
         self.eg_score = 0;
         self.phase = 0;
@@ -1002,20 +1004,21 @@ impl Board {
 
                     let lookup_sq = if side == Color::Black as usize { sq ^ 56 } else { sq };
 
-                    self.mg_score += sign * (MATERIAL_MG[pt] + PST_MG[pt][lookup_sq]);
-                    self.eg_score += sign * (MATERIAL_EG[pt] + PST_EG[pt][lookup_sq]);
+                    // Using params instead of hardcoded constants
+                    self.mg_score += sign * (params.material_mg[pt] + params.pst_mg[pt][lookup_sq]);
+                    self.eg_score += sign * (params.material_eg[pt] + params.pst_eg[pt][lookup_sq]);
 
-                    self.phase += PHASE_WEIGHTS[pt];
+                    self.phase += crate::eval::PHASE_WEIGHTS[pt];
                 }
             }
         }
 
-        if self.phase > MAX_PHASE { self.phase = MAX_PHASE; }
+        if self.phase > crate::eval::MAX_PHASE { self.phase = crate::eval::MAX_PHASE; }
     }
 
     /// Returns the tapered evaluation of the current position in centipawns.
-    pub fn evaluate(&self, alpha: i32, beta: i32) -> i32 {
-        let p = self.phase.min(MAX_PHASE);
+    pub fn evaluate(&self, alpha: i32, beta: i32, params: &EvalParams) -> i32 {
+        let p = self.phase.min(crate::eval::MAX_PHASE);
 
         let mut bonus = 0;
         if self.has_castled(Color::White) { bonus += 50; }
@@ -1026,7 +1029,7 @@ impl Board {
             if !self.can_castle(Color::Black) { bonus += 30; }
         }
         
-        let mut score = ((self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE) + bonus;
+        let mut score = ((self.mg_score * p + self.eg_score * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE) + bonus;
         let perspective_base = if self.side_to_move == Color::White { score } else { -score };
 
         let margin = 150;
@@ -1049,14 +1052,83 @@ impl Board {
             let w_count = self.get_piece_moves_bb(Color::White, piece).count() as i32;
             let b_count = self.get_piece_moves_bb(Color::Black, piece).count() as i32;
 
-            white_mobility_mg += w_count * MOBILITY_WEIGHTS_MG[pt];
-            white_mobility_eg += w_count * MOBILITY_WEIGHTS_EG[pt];
+            // Using params for mobility weights
+            white_mobility_mg += w_count * params.mobility_mg[pt];
+            white_mobility_eg += w_count * params.mobility_eg[pt];
             
-            black_mobility_mg += b_count * MOBILITY_WEIGHTS_MG[pt];
-            black_mobility_eg += b_count * MOBILITY_WEIGHTS_EG[pt];
+            black_mobility_mg += b_count * params.mobility_mg[pt];
+            black_mobility_eg += b_count * params.mobility_eg[pt];
         }
-        let w_mob_tapered = (white_mobility_mg * p + white_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
-        let b_mob_tapered = (black_mobility_mg * p + black_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
+        let w_mob_tapered = (white_mobility_mg * p + white_mobility_eg * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE;
+        let b_mob_tapered = (black_mobility_mg * p + black_mobility_eg * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE;
+
+        score += w_mob_tapered - b_mob_tapered;
+
+        if self.side_to_move == Color::White {
+            score
+        } else {
+            -score
+        }
+    }
+
+    /// Forces a complete recalculation of the evaluation from scratch.
+    /// Used exclusively by the Texel Tuner to bypass incremental updates/
+    pub fn evaluate_from_scratch(&self, params: &EvalParams) -> i32 {
+        let p = self.phase.min(crate::eval::MAX_PHASE);
+
+        let mut dynamic_mg_score = 0;
+        let mut dynamic_eg_score = 0;
+
+        for color in [Color::White, Color::Black] {
+            let sign = if color == Color::White { 1 } else { -1 };
+            
+            for pt in 0..6 { 
+                let mut bb = self.pieces[color as usize][pt];
+                while bb.0 != 0 {
+                    let sq = bb.pop_lsb();
+
+                    let eval_sq = if color == Color::White { sq as usize } else { sq as usize ^ 56 };
+
+                    dynamic_mg_score += sign * params.material_mg[pt];
+                    dynamic_eg_score += sign * params.material_eg[pt];
+
+                    dynamic_mg_score += sign * params.pst_mg[pt][eval_sq];
+                    dynamic_eg_score += sign * params.pst_eg[pt][eval_sq];
+                }
+            }
+        }
+
+        let mut bonus = 0;
+        if self.has_castled(Color::White) { bonus += 50; }
+        if self.has_castled(Color::Black) { bonus -= 50; }
+
+        if self.phase > 15 {
+            if !self.can_castle(Color::White) { bonus -= 30; }
+            if !self.can_castle(Color::Black) { bonus += 30; }
+        }
+        
+        let mut score = ((dynamic_mg_score * p + dynamic_eg_score * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE) + bonus;
+        
+        let mut white_mobility_mg = 0;
+        let mut white_mobility_eg = 0;
+        let mut black_mobility_mg = 0;
+        let mut black_mobility_eg = 0;
+
+        for pt in 1..6 {
+            let piece = PieceType::from_index(pt).unwrap();
+
+            let w_count = self.get_piece_moves_bb(Color::White, piece).count() as i32;
+            let b_count = self.get_piece_moves_bb(Color::Black, piece).count() as i32;
+
+            white_mobility_mg += w_count * params.mobility_mg[pt];
+            white_mobility_eg += w_count * params.mobility_eg[pt];
+            
+            black_mobility_mg += b_count * params.mobility_mg[pt];
+            black_mobility_eg += b_count * params.mobility_eg[pt];
+        }
+        
+        let w_mob_tapered = (white_mobility_mg * p + white_mobility_eg * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE;
+        let b_mob_tapered = (black_mobility_mg * p + black_mobility_eg * (crate::eval::MAX_PHASE - p)) / crate::eval::MAX_PHASE;
 
         score += w_mob_tapered - b_mob_tapered;
 
@@ -1069,26 +1141,26 @@ impl Board {
 
     /// Incrementally adds a piece's value to the global board evaluation.
     #[inline(always)]
-    fn add_eval(&mut self, side: Color, pt: PieceType, sq: Square) {
+    fn add_eval(&mut self, side: Color, pt: PieceType, sq: Square, params: &EvalParams) {
         let sign = if side == Color::White { 1 } else { -1 };
         let lookup_sq = if side == Color::Black { (sq as usize) ^ 56 } else { sq as usize };
         let pt_idx = pt as usize;
 
-        self.mg_score += sign * (MATERIAL_MG[pt_idx] + PST_MG[pt_idx][lookup_sq]);
-        self.eg_score += sign * (MATERIAL_EG[pt_idx] + PST_EG[pt_idx][lookup_sq]);
-        self.phase += PHASE_WEIGHTS[pt_idx];
+        self.mg_score += sign * (params.material_mg[pt_idx] + params.pst_mg[pt_idx][lookup_sq]);
+        self.eg_score += sign * (params.material_eg[pt_idx] + params.pst_eg[pt_idx][lookup_sq]);
+        self.phase += crate::eval::PHASE_WEIGHTS[pt_idx];
     }
 
     /// Incrementally removes a piece's value from the global board evaluation.
     #[inline(always)]
-    fn remove_eval(&mut self, side: Color, pt: PieceType, sq: Square) {
+    fn remove_eval(&mut self, side: Color, pt: PieceType, sq: Square, params: &EvalParams) {
         let sign = if side == Color::White { 1 } else { -1 };
         let lookup_sq = if side == Color::Black { (sq as usize) ^ 56 } else { sq as usize };
         let pt_idx = pt as usize;
 
-        self.mg_score -= sign * (MATERIAL_MG[pt_idx] + PST_MG[pt_idx][lookup_sq]);
-        self.eg_score -= sign * (MATERIAL_EG[pt_idx] + PST_EG[pt_idx][lookup_sq]);
-        self.phase -= PHASE_WEIGHTS[pt_idx];
+        self.mg_score -= sign * (params.material_mg[pt_idx] + params.pst_mg[pt_idx][lookup_sq]);
+        self.eg_score -= sign * (params.material_eg[pt_idx] + params.pst_eg[pt_idx][lookup_sq]);
+        self.phase -= crate::eval::PHASE_WEIGHTS[pt_idx];
     }
 
     /// Generates all possible moves that involve a capture
