@@ -68,7 +68,7 @@ impl Bitboard {
         Self(value)
     }
 
-    // returns True if the bit at the Square is 1, false if 0
+    // returns true if the bit at the Square is 1, false if 0
     pub fn is_occupied(&self, sq: Square) -> bool {
         ((self.0 >> (sq as u64)) & 1) == 1
     }

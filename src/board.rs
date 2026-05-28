@@ -84,44 +84,6 @@ impl Board {
         }
     }
 
-    // constructs Board at starting position
-    pub fn default() -> Self {
-        let pieces = [
-            [
-                Bitboard::new(WHITE_PAWNS),
-                Bitboard::new(WHITE_KNIGHTS),
-                Bitboard::new(WHITE_BISHOPS),
-                Bitboard::new(WHITE_ROOKS),
-                Bitboard::new(WHITE_QUEENS),
-                Bitboard::new(WHITE_KINGS),
-            ],
-            [
-                Bitboard::new(BLACK_PAWNS),
-                Bitboard::new(BLACK_KNIGHTS),
-                Bitboard::new(BLACK_BISHOPS),
-                Bitboard::new(BLACK_ROOKS),
-                Bitboard::new(BLACK_QUEENS),
-                Bitboard::new(BLACK_KINGS),
-            ]
-        ];
-
-        let occupancies = [
-            Bitboard::new(WHITE_START),
-            Bitboard::new(BLACK_START),
-            Bitboard::new(WHITE_START | BLACK_START),
-        ];
-
-        Self {
-            pieces,
-            occupancies,
-            side_to_move: Color::White,
-            en_passant: None,
-            castling_rights: 0b1111,
-            halfmove_clock: 0,
-            fullmove_number: 1,
-        }
-    }
-
     // constructs Board from FEN string
     pub fn from_fen(fen: &str) -> Self {
         let mut board = Self::empty();
@@ -360,7 +322,41 @@ impl Board {
 }
 
 impl Default for Board {
+    // constructs Board at starting position
     fn default() -> Self {
-        Board::default()
+        let pieces = [
+            [
+                Bitboard::new(WHITE_PAWNS),
+                Bitboard::new(WHITE_KNIGHTS),
+                Bitboard::new(WHITE_BISHOPS),
+                Bitboard::new(WHITE_ROOKS),
+                Bitboard::new(WHITE_QUEENS),
+                Bitboard::new(WHITE_KINGS),
+            ],
+            [
+                Bitboard::new(BLACK_PAWNS),
+                Bitboard::new(BLACK_KNIGHTS),
+                Bitboard::new(BLACK_BISHOPS),
+                Bitboard::new(BLACK_ROOKS),
+                Bitboard::new(BLACK_QUEENS),
+                Bitboard::new(BLACK_KINGS),
+            ]
+        ];
+
+        let occupancies = [
+            Bitboard::new(WHITE_START),
+            Bitboard::new(BLACK_START),
+            Bitboard::new(WHITE_START | BLACK_START),
+        ];
+
+        Self {
+            pieces,
+            occupancies,
+            side_to_move: Color::White,
+            en_passant: None,
+            castling_rights: 0b1111,
+            halfmove_clock: 0,
+            fullmove_number: 1,
+        }
     }
 }
