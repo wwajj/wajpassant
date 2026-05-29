@@ -313,3 +313,33 @@ pub fn get_rook_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     }
     attacks
 }
+
+#[inline(always)]
+pub fn get_bishop_attacks(sq: Square, occupancy: Bitboard) -> Bitboard {
+    unsafe {
+        let sq_idx = sq as usize;
+        let mask = BISHOP_MASKS[sq_idx].0;
+        let blockers = occupancy.0 & mask;
+        let magic = BISHOP_MAGICS[sq_idx];
+        
+        let shift = 64 - BISHOP_MASKS[sq_idx].count(); 
+        
+        let magic_index = (blockers.wrapping_mul(magic) >> shift) as usize;
+        BISHOP_ATTACKS[sq_idx][magic_index]
+    }
+}
+
+#[inline(always)]
+pub fn get_rook_attacks(sq: Square, occupancy: Bitboard) -> Bitboard {
+    unsafe {
+        let sq_idx = sq as usize;
+        let mask = ROOK_MASKS[sq_idx].0;
+        let blockers = occupancy.0 & mask;
+        let magic = ROOK_MAGICS[sq_idx];
+        
+        let shift = 64 - ROOK_MASKS[sq_idx].count();
+        
+        let magic_index = (blockers.wrapping_mul(magic) >> shift) as usize;
+        ROOK_ATTACKS[sq_idx][magic_index]
+    }
+}
