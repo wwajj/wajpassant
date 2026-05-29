@@ -58,13 +58,13 @@ pub const BLACK_KINGS: u64 = 0x1000000000000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Board {
-    pieces: [[Bitboard; 6]; 2],
-    occupancies: [Bitboard; 3],
-    side_to_move: Color,
-    en_passant: Option<Square>,
-    castling_rights: u8,
-    halfmove_clock: u16,
-    fullmove_number: u16,
+    pub pieces: [[Bitboard; 6]; 2],
+    pub occupancies: [Bitboard; 3],
+    pub side_to_move: Color,
+    pub en_passant: Option<Square>,
+    pub castling_rights: u8,
+    pub halfmove_clock: u16,
+    pub fullmove_number: u16,
 }
 
 impl Board {

@@ -70,12 +70,12 @@ impl Move {
     // extracts what Piece to put on Board after promotion
     pub fn get_promotion_piece(&self) -> Option<PieceType> {
         match self.get_flags() {
-            FLAG_PROMO_N | FLAG_CAPTURE_PROMO_N => return Some(PieceType::Knight),
-            FLAG_PROMO_B | FLAG_CAPTURE_PROMO_B => return Some(PieceType::Bishop),
-            FLAG_PROMO_R | FLAG_CAPTURE_PROMO_R => return Some(PieceType::Rook),
-            FLAG_PROMO_Q | FLAG_CAPTURE_PROMO_Q => return Some(PieceType::Queen),
-            _ => return None,
-        };
+            FLAG_PROMO_N | FLAG_CAPTURE_PROMO_N => Some(PieceType::Knight),
+            FLAG_PROMO_B | FLAG_CAPTURE_PROMO_B => Some(PieceType::Bishop),
+            FLAG_PROMO_R | FLAG_CAPTURE_PROMO_R => Some(PieceType::Rook),
+            FLAG_PROMO_Q | FLAG_CAPTURE_PROMO_Q => Some(PieceType::Queen),
+            _ => None,
+        }
     }
 
     // extracts Piece as char after promotion
@@ -83,9 +83,9 @@ impl Move {
         match self.get_flags() {
             FLAG_PROMO_N | FLAG_CAPTURE_PROMO_N => Some('n'),
             FLAG_PROMO_B | FLAG_CAPTURE_PROMO_B => Some('b'),
-            FLAG_PROMO_R | FLAG_CAPTURE_PROMO_R => return Some('r'),
-            FLAG_PROMO_Q | FLAG_CAPTURE_PROMO_Q => return Some('q'),
-            _ => return None,
+            FLAG_PROMO_R | FLAG_CAPTURE_PROMO_R => Some('r'),
+            FLAG_PROMO_Q | FLAG_CAPTURE_PROMO_Q => Some('q'),
+            _ => None,
         }
     }
 }
