@@ -1,17 +1,39 @@
+//! Pseudo-legal move generation for all piece types.
+//!
+//! This module is responsible for reading the current `Board` state and generating 
+//! a `MoveList` of all possible pseudo-legal moves. A pseudo-legal move is a move 
+//! that follows the basic directional rules of the pieces, but does not yet guarantee 
+//! that the King is safe from capture (that check is handled later during `make_move`).
+
 use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_A_FILE, NOT_H_FILE};
 use crate::board::{Color, PieceType, Board};
 use crate::movelist::MoveList;
 use crate::moves::*;
 
+// --- Constants ---
+
+/// Bitmask for the 1st rank.
 pub const FIRST_RANK: u64 = 0x00000000000000FF;
+/// Bitmask for the 3rd rank.
 pub const THIRD_RANK: u64 = 0x0000000000FF0000;
+/// Bitmask for the 6th rank. 
 pub const SIXTH_RANK: u64 = 0x0000FF0000000000;
+/// Bitmask for the 8th rank.
 pub const EIGHTH_RANK: u64 = 0xFF00000000000000;
 
+/// Standard array of flags to iterate over when a quiet pawn promotion occurs.
 pub const PROMO_LIST: [u16; 4] = [FLAG_PROMO_N, FLAG_PROMO_B, FLAG_PROMO_R, FLAG_PROMO_Q];
+/// Standard array of flags to iterate over when a capturing pawn promotion occurs.
 pub const CAPTURE_PROMO_LIST: [u16; 4] = [FLAG_CAPTURE_PROMO_N, FLAG_CAPTURE_PROMO_B, FLAG_CAPTURE_PROMO_R, FLAG_CAPTURE_PROMO_Q];
 
+// --- Main Generator ---
+
+/// Populates a `MoveList` with all pseudo-legal moves for the current side to move.
+///
+/// **Note:** This function generates *pseudo-legal* moves. It will allow moves that 
+/// might leave the active player's King in check. Legality is strictly verified 
+/// inside the `make_move` function during the search phase.
 pub fn generate_legal_moves(board: &Board, mvlist: &mut MoveList) {
     let us = board.side_to_move;
     let them = us.flip();
@@ -27,6 +49,9 @@ pub fn generate_legal_moves(board: &Board, mvlist: &mut MoveList) {
     generate_king_moves(board, mvlist, us, friendly_occupancy, enemy_occupancy, total_occupancy);
 }
 
+// --- Piece-Specific Generators ---
+
+/// Generates all pawn pushes, double pushes, captures, en passants, and promotions.
 pub fn generate_pawn_moves(board: &Board, mvlist: &mut MoveList, us: Color, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     if us == Color::White {
         let pieces = board.pieces[us as usize][PieceType::Pawn as usize];
@@ -225,6 +250,7 @@ pub fn generate_pawn_moves(board: &Board, mvlist: &mut MoveList, us: Color, enem
     }
 }
 
+/// Generates all pseudo-legal Knight moves (captures and quiets) using static attack array lookups.
 pub fn generate_knight_moves(board: &Board, mvlist: &mut MoveList, us: Color, friendly_occupancy: Bitboard, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     let mut pieces = board.pieces[us as usize][PieceType::Knight as usize];
     while pieces.0 != 0 {
@@ -247,6 +273,7 @@ pub fn generate_knight_moves(board: &Board, mvlist: &mut MoveList, us: Color, fr
     }
 }
 
+/// Generates all pseudo-legal King moves, including castling.
 pub fn generate_king_moves(board: &Board, mvlist: &mut MoveList, us: Color, friendly_occupancy: Bitboard, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     let mut pieces = board.pieces[us as usize][PieceType::King as usize];
     while pieces.0 != 0 {
@@ -295,6 +322,7 @@ pub fn generate_king_moves(board: &Board, mvlist: &mut MoveList, us: Color, frie
     }
 }
 
+/// Generates all pseudo-legal Bishop moves using Magic Bitboard lookups.
 pub fn generate_bishop_moves(board: &Board, mvlist: &mut MoveList, us: Color, friendly_occupancy: Bitboard, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     let mut pieces = board.pieces[us as usize][PieceType::Bishop as usize];
     
@@ -317,6 +345,7 @@ pub fn generate_bishop_moves(board: &Board, mvlist: &mut MoveList, us: Color, fr
     }
 }
 
+/// Generates all pseudo-legal Rook moves using Magic Bitboard lookups.
 pub fn generate_rook_moves(board: &Board, mvlist: &mut MoveList, us: Color, friendly_occupancy: Bitboard, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     let mut pieces = board.pieces[us as usize][PieceType::Rook as usize];
     
@@ -339,6 +368,7 @@ pub fn generate_rook_moves(board: &Board, mvlist: &mut MoveList, us: Color, frie
     }
 }
 
+/// Generates all pseudo-legal Queen moves by combining Bishop and Rook Magic lookups.
 pub fn generate_queen_moves(board: &Board, mvlist: &mut MoveList, us: Color, friendly_occupancy: Bitboard, enemy_occupancy: Bitboard, total_occupancy: Bitboard) {
     let mut pieces = board.pieces[us as usize][PieceType::Queen as usize];
     

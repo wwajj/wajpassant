@@ -1,5 +1,32 @@
+//! Low-level board representation and bitwise mathematics.
+//!
+//! A bitboard is a 64-bit integer where each bit represents a square on the 
+//! chessboard.
+//! This module provides the `Bitboard` wrapper struct and implements the 
+//! standard mathematical operators to allow for extremely fast, parallel 
+//! piece manipulation.
+
 use std::ops::{BitAnd, BitOr, BitXor, Not, Shl, Shr, BitAndAssign, BitOrAssign, BitXorAssign};
 
+/// Mask to clear the H-file (prevents pieces from wrapping around the board to the A-file).
+pub const NOT_H_FILE: u64 = 0x7F7F7F7F7F7F7F7F;
+
+/// Mask to clear the A-file (prevents pieces from wrapping around the board to the H-file).
+pub const NOT_A_FILE: u64 = 0xFEFEFEFEFEFEFEFE;
+
+/// A lookup array to easily convert a raw `usize` index (0..63) back into a strongly-typed `Square`.
+pub const SQUARES: [Square; 64] = [
+    Square::A1, Square::B1, Square::C1, Square::D1, Square::E1, Square::F1, Square::G1, Square::H1,
+    Square::A2, Square::B2, Square::C2, Square::D2, Square::E2, Square::F2, Square::G2, Square::H2,
+    Square::A3, Square::B3, Square::C3, Square::D3, Square::E3, Square::F3, Square::G3, Square::H3,
+    Square::A4, Square::B4, Square::C4, Square::D4, Square::E4, Square::F4, Square::G4, Square::H4,
+    Square::A5, Square::B5, Square::C5, Square::D5, Square::E5, Square::F5, Square::G5, Square::H5,
+    Square::A6, Square::B6, Square::C6, Square::D6, Square::E6, Square::F6, Square::G6, Square::H6,
+    Square::A7, Square::B7, Square::C7, Square::D7, Square::E7, Square::F7, Square::G7, Square::H7,
+    Square::A8, Square::B8, Square::C8, Square::D8, Square::E8, Square::F8, Square::G8, Square::H8,
+];
+
+/// Represents the 64 squares of a chessboard, strictly mapped to integers 0 through 63.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Square {
@@ -12,111 +39,166 @@ pub enum Square {
     A7 = 48, B7 = 49, C7 = 50, D7 = 51, E7 = 52, F7 = 53, G7 = 54, H7 = 55,
     A8 = 56, B8 = 57, C8 = 58, D8 = 59, E8 = 60, F8 = 61, G8 = 62, H8 = 63,
 }
-pub const SQUARES: [Square; 64] = [
-    Square::A1, Square::B1, Square::C1, Square::D1, Square::E1, Square::F1, Square::G1, Square::H1,
-    Square::A2, Square::B2, Square::C2, Square::D2, Square::E2, Square::F2, Square::G2, Square::H2,
-    Square::A3, Square::B3, Square::C3, Square::D3, Square::E3, Square::F3, Square::G3, Square::H3,
-    Square::A4, Square::B4, Square::C4, Square::D4, Square::E4, Square::F4, Square::G4, Square::H4,
-    Square::A5, Square::B5, Square::C5, Square::D5, Square::E5, Square::F5, Square::G5, Square::H5,
-    Square::A6, Square::B6, Square::C6, Square::D6, Square::E6, Square::F6, Square::G6, Square::H6,
-    Square::A7, Square::B7, Square::C7, Square::D7, Square::E7, Square::F7, Square::G7, Square::H7,
-    Square::A8, Square::B8, Square::C8, Square::D8, Square::E8, Square::F8, Square::G8, Square::H8,
-];
 
+/// A wrapper struct around a 64-bit integer representing a chessboard state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Bitboard(pub u64);
-pub const NOT_H_FILE: u64 = 0x7F7F7F7F7F7F7F7F;
-pub const NOT_A_FILE: u64 = 0xFEFEFEFEFEFEFEFE;
+
+// --- Operator Overloads ---
+
+impl BitAnd for Bitboard {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 & rhs.0)
+    }
+}
+
+impl BitOr for Bitboard {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 | rhs.0)
+    }
+}
+
+impl BitXor for Bitboard {
+    type Output = Self;
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 ^ rhs.0)
+    }
+}
+
+impl Not for Bitboard {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        Bitboard(!self.0)
+    }
+}
+
+impl Shl<usize> for Bitboard {
+    type Output = Self;
+    fn shl(self, rhs: usize) -> Self::Output {
+        Bitboard(self.0 << rhs)
+    }
+}
+
+impl Shr<usize> for Bitboard {
+    type Output = Self;
+    fn shr(self, rhs: usize) -> Self::Output {
+        Bitboard(self.0 >> rhs)
+    }
+}
+
+impl BitAndAssign for Bitboard {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
+impl BitOrAssign for Bitboard {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl BitXorAssign for Bitboard {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0;
+    }
+}
+
+// --- Methods ---
 
 impl Bitboard {
-    // constructor
+    /// Constructs a new `Bitboard` from a raw `u64` value.
     pub fn new(value: u64) -> Self {
         Self(value)
     }
 
-    // constructs Bitboard of 0s
+    /// Constructs an empty `Bitboard` (all bits set to 0).
     pub const fn empty() -> Self {
         Self(0)
     }
 
-    // constructs Bitboard of 1s
+    /// Constructs a full `Bitboard` (all bits set to 1).
     pub fn full() -> Self {
         Self(u64::MAX)
     }
 
-    // sets Square bit of empty Bitboard to 1 
+    /// Constructs a `Bitboard` with only the given square set to 1.
     pub fn from_square(sq: Square) -> Self {
         let value = 1u64 << (sq as u64);
         Self(value)
     }
 
-    // changs the bit at given Square to 1
+    /// Returns a new `Bitboard` with the bit at the given square set to 1.
     pub fn set_bit(&self, sq: Square) -> Self {
         let value = self.0 | (1u64 << (sq as u64));
         Self(value)
     }
 
-    // changes the bit at given Square to 0
+    /// Returns a new `Bitboard` with the bit at the given square cleared to 0.
     pub fn clear_bit(&self, sq: Square) -> Self {
         let value = self.0 & !(1u64 <<  (sq as u64));
         Self(value)
     }
 
-    // flips bit at given Square
+    /// Returns a new `Bitboard` with the bit at the given square flipped.
     pub fn toggle_bit(&self, sq: Square) -> Self {
         let value = self.0 ^ (1u64 << (sq as u64));
         Self(value)
     }
 
-    // returns true if the bit at the Square is 1, false if 0
+    /// Returns `true` if the bit at the given square is 1.
     pub fn is_occupied(&self, sq: Square) -> bool {
         ((self.0 >> (sq as u64)) & 1) == 1
     }
 
-    // returns the total number of bits set to 1 on the Bitboard
+    /// Returns the total number of bits set to 1 (uses the `popcnt` CPU instruction).
     pub fn count(&self) -> u32 {
         self.0.count_ones()
     }
 
-    // returns the Square of the LSB
-    // throws an error for an empty board
+    /// Returns the `Square` corresponding to the Least Significant Bit (LSB).
+    /// 
+    /// **Panics:** If called on an empty bitboard in debug mode.
     pub fn get_lsb(&self) -> Square {
+        debug_assert!(self.0 != 0, "FATAL: Tried to get LSB of an empty bitboard!");
         let index = self.0.trailing_zeros() as usize; 
         SQUARES[index]
     }
 
-    // finds the LSB, returns its Square, and clears that bit to 0
+    /// Extracts the `Square` of the LSB and simultaneously clears that bit from the board.
     pub fn pop_lsb(&mut self) -> Square {
         let sq = self.get_lsb();
         self.0 &= self.0 - 1;
         sq
     }
 
-    // shifts all bits up one rank
+    /// Shifts all bits "North" (up one rank).
     pub fn shift_north(&self) -> Self {
         let value = self.0 << 8;
         Self(value)
     }
 
-    // shifts all bits down one rank
+    /// Shifts all bits "South" (down one rank).
     pub fn shift_south(&self) -> Self {
         let value = self.0 >> 8;
         Self(value)
     }
 
-    // shifts all bits right one file
+    /// Shifts all bits "East" (right one file), preventing wrap-around.
     pub fn shift_east(&self) -> Self {
         let value: u64 = (self.0 & NOT_H_FILE) << 1;
         Self(value)
     }
 
-    // shifts all bits left one file
+    /// Shifts all bits "West" (left one file), preventing wrap-around.
     pub fn shift_west(&self) -> Self {
         let value: u64 = (self.0 & NOT_A_FILE) >> 1;
         Self(value)
     }
 
-    // prints the Bitboard as a formatted 8x8 grid
+    /// Prints the Bitboard to the console as a formatted 8x8 grid for debugging.
     pub fn print(&self) {
         println!();
 
@@ -135,80 +217,5 @@ impl Bitboard {
         }
 
         println!("\n    A B C D E F G H\n")
-    }
-}
-
-// implements bitwise & for Bitboards
-impl BitAnd for Bitboard {
-    type Output = Self;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Bitboard(self.0 & rhs.0)
-    }
-}
-
-// implements bitwise | for Bitboards
-impl BitOr for Bitboard {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Bitboard(self.0 | rhs.0)
-    }
-}
-
-// implements bitwise ^ for Bitboards
-impl BitXor for Bitboard {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        Bitboard(self.0 ^ rhs.0)
-    }
-}
-
-// implements bitwise ! for Bitboards
-impl Not for Bitboard {
-    type Output = Self;
-
-    fn not(self) -> Self::Output {
-        Bitboard(!self.0)
-    }
-}
-
-// implements bitwise << for Bitboards
-impl Shl<usize> for Bitboard {
-    type Output = Self;
-
-    fn shl(self, rhs: usize) -> Self::Output {
-        Bitboard(self.0 << rhs)
-    }
-}
-
-// implements bitwise >> for Bitboards
-impl Shr<usize> for Bitboard {
-    type Output = Self;
-
-    fn shr(self, rhs: usize) -> Self::Output {
-        Bitboard(self.0 >> rhs)
-    }
-}
-
-// implements bitwise &= for Bitboards
-impl BitAndAssign for Bitboard {
-    fn bitand_assign(&mut self, rhs: Self) {
-        self.0 &= rhs.0;
-    }
-}
-
-// implements bitwise |= for Bitboards
-impl BitOrAssign for Bitboard {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-// implements bitwise ^= for Bitboards
-impl BitXorAssign for Bitboard {
-    fn bitxor_assign(&mut self, rhs: Self) {
-        self.0 ^= rhs.0;
     }
 }

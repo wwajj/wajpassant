@@ -1,13 +1,39 @@
+//! The core state representation of the chess engine.
+//!
+//! This module defines the `Board` struct, which is responsible for tracking
+//! the positions of all pieces using bitboards, as well as maintaining the
+//! game state (side to move, castling rights, en passant, and move clocks).
+
 use crate::bitboard::{Bitboard, Square, SQUARES};
 
+/// Starting position bitboard masks for White pieces.
+pub const WHITE_START: u64 = 0x000000000000FFFF;
+pub const WHITE_PAWNS: u64 = 0x000000000000FF00;
+pub const WHITE_KNIGHTS: u64 = 0x0000000000000042;
+pub const WHITE_BISHOPS: u64 = 0x0000000000000024;
+pub const WHITE_ROOKS: u64 = 0x0000000000000081;
+pub const WHITE_QUEENS: u64 = 0x0000000000000008;
+pub const WHITE_KINGS: u64 = 0x0000000000000010;
+
+/// Starting position bitboard masks for Black pieces.
+pub const BLACK_START: u64 = 0xFFFF000000000000;
+pub const BLACK_PAWNS: u64 = 0x00FF000000000000;
+pub const BLACK_KNIGHTS: u64 = 0x4200000000000000;
+pub const BLACK_BISHOPS: u64 = 0x2400000000000000;
+pub const BLACK_ROOKS: u64 = 0x8100000000000000;
+pub const BLACK_QUEENS: u64 = 0x0800000000000000;
+pub const BLACK_KINGS: u64 = 0x1000000000000000; 
+
+/// Represents the two players in a chess game.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Color {
     White = 0,
     Black = 1,
 }
+
 impl Color {
-    // switches turn
+    /// Returns the opposite color, effectively switching the turn.
     pub fn flip(self) -> Self {
         match self {
             Color::White => Color::Black,
@@ -16,6 +42,7 @@ impl Color {
     }
 }
 
+/// Represents the six piece types in chess.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum PieceType {
@@ -26,8 +53,9 @@ pub enum PieceType {
     Queen  = 4,
     King   = 5,
 }
+
 impl PieceType {
-    // converts a raw number back into a PieceType.
+    /// Converts a raw array index (0..5) back into a strongly-typed `PieceType`.
     pub fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(Self::Pawn),
@@ -41,34 +69,69 @@ impl PieceType {
     }
 }
 
-pub const WHITE_START: u64 = 0x000000000000FFFF;
-pub const WHITE_PAWNS: u64 = 0x000000000000FF00;
-pub const WHITE_KNIGHTS: u64 = 0x0000000000000042;
-pub const WHITE_BISHOPS: u64 = 0x0000000000000024;
-pub const WHITE_ROOKS: u64 = 0x0000000000000081;
-pub const WHITE_QUEENS: u64 = 0x0000000000000008;
-pub const WHITE_KINGS: u64 = 0x0000000000000010;
-pub const BLACK_START: u64 = 0xFFFF000000000000;
-pub const BLACK_PAWNS: u64 = 0x00FF000000000000;
-pub const BLACK_KNIGHTS: u64 = 0x4200000000000000;
-pub const BLACK_BISHOPS: u64 = 0x2400000000000000;
-pub const BLACK_ROOKS: u64 = 0x8100000000000000;
-pub const BLACK_QUEENS: u64 = 0x0800000000000000;
-pub const BLACK_KINGS: u64 = 0x1000000000000000; 
-
+/// The master representation of the chess board state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Board {
+    /// 2D array of bitboards separated by [Color][PieceType].
     pub pieces: [[Bitboard; 6]; 2],
+    /// Master occupancies: [White, Black, Total].
     pub occupancies: [Bitboard; 3],
+    /// The player whose turn it is to move.
     pub side_to_move: Color,
+    /// The target square for a valid En Passant capture, if any.
     pub en_passant: Option<Square>,
+    /// Bitmask representing castling availability (WK=1, WQ=2, BK=4, BQ=8).
     pub castling_rights: u8,
+    /// The number of halfmoves since the last capture or pawn advance (for the 50-move rule).
     pub halfmove_clock: u16,
+    /// The number of full moves in the game. Increments after Black's move.
     pub fullmove_number: u16,
 }
 
+// Standard traits 
+impl Default for Board {
+    /// Constructs a `Board` fully populated at the standard chess starting position.
+    fn default() -> Self {
+        let pieces = [
+            [
+                Bitboard::new(WHITE_PAWNS),
+                Bitboard::new(WHITE_KNIGHTS),
+                Bitboard::new(WHITE_BISHOPS),
+                Bitboard::new(WHITE_ROOKS),
+                Bitboard::new(WHITE_QUEENS),
+                Bitboard::new(WHITE_KINGS),
+            ],
+            [
+                Bitboard::new(BLACK_PAWNS),
+                Bitboard::new(BLACK_KNIGHTS),
+                Bitboard::new(BLACK_BISHOPS),
+                Bitboard::new(BLACK_ROOKS),
+                Bitboard::new(BLACK_QUEENS),
+                Bitboard::new(BLACK_KINGS),
+            ]
+        ];
+
+        let occupancies = [
+            Bitboard::new(WHITE_START),
+            Bitboard::new(BLACK_START),
+            Bitboard::new(WHITE_START | BLACK_START),
+        ];
+
+        Self {
+            pieces,
+            occupancies,
+            side_to_move: Color::White,
+            en_passant: None,
+            castling_rights: 0b1111,
+            halfmove_clock: 0,
+            fullmove_number: 1,
+        }
+    }
+}
+
+// Inherent methods
 impl Board {
-    // constructs empty Board
+    /// Constructs a completely empty `Board` with no pieces.
     pub fn empty() -> Self {
         Self {
             pieces: [
@@ -84,7 +147,7 @@ impl Board {
         }
     }
 
-    // constructs Board from FEN string
+    /// Parses a standard FEN string and returns a populated `Board`.
     pub fn from_fen(fen: &str) -> Self {
         let mut board = Self::empty();
 
@@ -158,7 +221,7 @@ impl Board {
         board
     }
 
-    // constructs FEN String from Board
+    /// Converts the current `Board` state into a standard FEN string.
     pub fn to_fen(&self) -> String {
         let mut fen = String::new();
 
@@ -220,7 +283,7 @@ impl Board {
         fen
     }
 
-    // prints the Board in a formatted grid alongside necessary information
+    /// Prints the board as a formatted 8x8 console grid alongside relevant game state variables.
     pub fn print(&self) {
         let piece_chars = ['P', 'N', 'B', 'R', 'Q', 'K'];
 
@@ -274,7 +337,7 @@ impl Board {
         });
     } 
 
-    // takes a Square and checks Bitboards and returns what piece is sitting there
+    /// Probes the bitboards to return the specific `PieceType` residing on a given square.
     pub fn piece_at(&self, sq: Square) -> Option<PieceType> {
         if !self.occupancies[2].is_occupied(sq) {
             return None;
@@ -291,7 +354,7 @@ impl Board {
         None
     }
 
-    // helper method to recalculate the 3 master occupancy bitboards
+    /// Completely recalculates the 3 master occupancy bitboards based on the individual piece boards.
     pub fn update_occupancies(&mut self) {
         self.occupancies[0] = Bitboard::empty();
         self.occupancies[1] = Bitboard::empty();
@@ -304,7 +367,7 @@ impl Board {
         self.occupancies[2] = self.occupancies[0] | self.occupancies[1];
     }
 
-    // removes a piece from the board and updates master masks
+    /// Removes a piece from the board and synchronizes the master occupancy masks.
     pub fn remove_piece(&mut self, sq: Square, side: Color, pt: PieceType) {
         self.pieces[side as usize][pt as usize] = self.pieces[side as usize][pt as usize].clear_bit(sq);
 
@@ -312,51 +375,11 @@ impl Board {
         self.occupancies[2] = self.occupancies[2].clear_bit(sq);
     }
 
-    // adds a piece to the board and updates the master masks
+    /// Adds a piece to the board and synchronizes the master occupancy masks.
     pub fn add_piece(&mut self, sq: Square, side: Color, pt: PieceType) {
         self.pieces[side as usize][pt as usize] = self.pieces[side as usize][pt as usize].set_bit(sq);
 
         self.occupancies[side as usize] = self.occupancies[side as usize].set_bit(sq);
         self.occupancies[2] = self.occupancies[2].set_bit(sq);
-    }
-}
-
-impl Default for Board {
-    // constructs Board at starting position
-    fn default() -> Self {
-        let pieces = [
-            [
-                Bitboard::new(WHITE_PAWNS),
-                Bitboard::new(WHITE_KNIGHTS),
-                Bitboard::new(WHITE_BISHOPS),
-                Bitboard::new(WHITE_ROOKS),
-                Bitboard::new(WHITE_QUEENS),
-                Bitboard::new(WHITE_KINGS),
-            ],
-            [
-                Bitboard::new(BLACK_PAWNS),
-                Bitboard::new(BLACK_KNIGHTS),
-                Bitboard::new(BLACK_BISHOPS),
-                Bitboard::new(BLACK_ROOKS),
-                Bitboard::new(BLACK_QUEENS),
-                Bitboard::new(BLACK_KINGS),
-            ]
-        ];
-
-        let occupancies = [
-            Bitboard::new(WHITE_START),
-            Bitboard::new(BLACK_START),
-            Bitboard::new(WHITE_START | BLACK_START),
-        ];
-
-        Self {
-            pieces,
-            occupancies,
-            side_to_move: Color::White,
-            en_passant: None,
-            castling_rights: 0b1111,
-            halfmove_clock: 0,
-            fullmove_number: 1,
-        }
     }
 }

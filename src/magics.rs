@@ -1,3 +1,11 @@
+//! Pre-computed magic numbers for slider move generation.
+//!
+//! This module contains the 64-bit magic numbers used to perform perfect hashing 
+//! in the Magic Bitboards implementation. By multiplying a blocker mask by these 
+//! specific numbers and shifting the result, we can map any configuration of pieces
+//! on a Bishop's or Rook's path to a perfectly unique, small array index.
+
+/// 64 pre-calculated magic numbers for the Bishop, mapping to squares 0 through 63.
 pub const BISHOP_MAGICS: [u64; 64] = [
     0x40040844404084, 0x2004208a004208, 0x10190041080202, 0x108060845042010,
     0x581104180800210, 0x2112080446200010, 0x1080820820060210, 0x3c0808410220200,
@@ -17,6 +25,7 @@ pub const BISHOP_MAGICS: [u64; 64] = [
     0x80040280401802, 0x1102040501, 0x2101014020042, 0x81014014080
 ];
 
+/// 64 pre-calculated magic numbers for the Rook, mapping to squares 0 through 63.
 pub const ROOK_MAGICS: [u64; 64] = [
     0x8a80104000800020, 0x140002000100040, 0x2801880a0017001, 0x100081001000420,
     0x200020010080420, 0x3001c0002010008, 0x8480008002000100, 0x2080088004402900,
