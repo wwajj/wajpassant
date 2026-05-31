@@ -1,118 +1,41 @@
-//! Magic Bitboard generation and hashing key discovery.
-//!
-//! This module uses a Pseudo-Random Number Generator (PRNG) to brute-force 
-//! perfect hashing keys (Magic Numbers) at startup. These keys allow us to 
-//! map any blocker configuration on a slider's path to a unique array index 
-//! without any destructive collisions.
+//! Magic Bitboard fixed keys.
 
-use crate::bitboard::{Bitboard, Square, SQUARES};
-use crate::attacks::{mask_bishop, mask_rook, get_bishop_attacks_slow, get_rook_attacks_slow};
+// --- Pre-calculated Magic Hashing Keys ---
 
-// --- Global Magic Arrays ---
-/// 64 perfect hashing keys for the Bishop, generated at runtime.
-pub static mut BISHOP_MAGICS: [u64; 64] = [0; 64];
-/// 64 perfect hashing keys for the Rook, generated at runtime.
-pub static mut ROOK_MAGICS: [u64; 64] = [0; 64];
+pub const ROOK_MAGICS: [u64; 64] = [
+    0x028000400210E080u64, 0x014020001000C000u64, 0x2100110040082004u64, 0x0200081042000420u64,
+    0x8100020408001100u64, 0x0100040008010002u64, 0x02000A0004588108u64, 0x0100008041000022u64,
+    0x0084800088400020u64, 0x0000808020004000u64, 0x0802801000802000u64, 0x0009000900201000u64,
+    0x0041001104080100u64, 0x1C06000824300201u64, 0x2120808001000200u64, 0x0302000064020081u64,
+    0x8000208000400080u64, 0x0000808020004000u64, 0x0210008010802000u64, 0x2000808010000800u64,
+    0x0240808004000802u64, 0x0001010004000208u64, 0x8001008080020001u64, 0x0000020000804114u64,
+    0x0020400080208000u64, 0x2040400140201000u64, 0x2800208200104A00u64, 0x02801001000D0020u64,
+    0x2020040080800800u64, 0x5612000404001020u64, 0x0490119400100248u64, 0x0400204200011094u64,
+    0x0200401020800081u64, 0x2420400081802000u64, 0x0000120082004020u64, 0x0000080080801002u64,
+    0x2020040080800800u64, 0x3020020080800400u64, 0x000A011004000802u64, 0x2104800040800100u64,
+    0x0020400080208000u64, 0x0880500020004000u64, 0x100C200441010010u64, 0x80810010008B0022u64,
+    0x0003000800050010u64, 0x0200040002008080u64, 0x0000010890040002u64, 0x0010010040820024u64,
+    0x0300400080002080u64, 0x44049040010C2100u64, 0x8102100480200880u64, 0x2406081042220200u64,
+    0x0001022800500500u64, 0x0004842030406801u64, 0x9004080231109400u64, 0x0901000220408100u64,
+    0x4080260100401086u64, 0x0040010014204085u64, 0x4200402000100901u64, 0x8002000440100822u64,
+    0x0001001002080005u64, 0x1401000400080201u64, 0x0000300081220824u64, 0x8400022300CC0382u64,
+];
 
-// --- PRNG (Pseudo-Random Number Generator) ---
-/// A lightweight xorshift PRNG used to find sparse magic numbers.
-struct PRNG { 
-    state: u64 
-}
-
-impl PRNG {
-    /// Generates a random 64-bit integer.
-    fn rand64(&mut self) -> u64 {
-        self.state ^= self.state >> 12;
-        self.state ^= self.state << 25;
-        self.state ^= self.state >> 27;
-        self.state = self.state.wrapping_mul(2685821657736338717);
-        self.state
-    }
-
-    /// Generates a sparse random 64-bit integer (very few active 1s).
-    /// Magic numbers hash significantly better when they have low bit density.
-    fn rand_fewbits(&mut self) -> u64 {
-        self.rand64() & self.rand64() & self.rand64()
-    }
-}
-
-// --- The Magic Finder Algorithm ---
-
-/// Brute-forces a magic number for a specific square and piece type.
-pub fn find_magic(sq: Square, shift: u32, is_bishop: bool) -> u64 {
-    let mask = if is_bishop { mask_bishop(sq) } else { mask_rook(sq) };
-    let num_bits = mask.count();
-    let num_blocker_configs = 1 << num_bits;
-    
-    let mut blockers = vec![Bitboard::empty(); num_blocker_configs];
-    let mut attacks = vec![Bitboard::empty(); num_blocker_configs];
-    
-    let mut occupancy = Bitboard::empty();
-    let mut i = 0;
-    
-    loop {
-        blockers[i] = occupancy;
-        attacks[i] = if is_bishop { 
-            get_bishop_attacks_slow(sq, occupancy) 
-        } else { 
-            get_rook_attacks_slow(sq, occupancy) 
-        };
-        
-        i += 1;
-        
-        occupancy = Bitboard(occupancy.0.wrapping_sub(1) & mask.0);
-        if occupancy == Bitboard::empty() { break; }
-    }
-
-    let mut prng = PRNG { state: 123456789 }; 
-    let mut used_attacks = vec![Bitboard::empty(); 1 << (64 - shift)];
-
-    loop {
-        let magic = prng.rand_fewbits();
-        
-        if (mask.0.wrapping_mul(magic) & 0xFF00_0000_0000_0000).count_ones() < 6 {
-            continue;
-        }
-
-        let mut success = true;
-        
-        used_attacks.fill(Bitboard::empty()); 
-
-        for i in 0..num_blocker_configs {
-            let index = (blockers[i].0.wrapping_mul(magic) >> shift) as usize;
-            
-            if used_attacks[index] == Bitboard::empty() {
-                used_attacks[index] = attacks[i];
-            } else if used_attacks[index] != attacks[i] {
-                success = false;
-                break;
-            }
-        }
-
-        if success {
-            return magic;
-        }
-    }
-}
-
-// --- Initialization ---
-
-/// Brute-forces and populates the `BISHOP_MAGICS` and `ROOK_MAGICS` arrays.
-pub fn init_magics() {
-    println!("Generating Magic Numbers...");
-    
-    for sq_idx in 0..64 {
-        let sq = SQUARES[sq_idx];
-        
-        let bishop_shift = 64 - mask_bishop(sq).count();
-        let rook_shift = 64 - mask_rook(sq).count();
-        
-        unsafe {
-            BISHOP_MAGICS[sq_idx] = find_magic(sq, bishop_shift, true);
-            ROOK_MAGICS[sq_idx] = find_magic(sq, rook_shift, false);
-        }
-    }
-    
-    println!("Magic Numbers Generated Successfully!");
-}
+pub const BISHOP_MAGICS: [u64; 64] = [
+    0x0010203200822901u64, 0x026210A400808110u64, 0x8010040890300070u64, 0x0404040880000000u64,
+    0x0404042000100504u64, 0x0912081406040000u64, 0x0000821002A10008u64, 0x014200450401A020u64,
+    0x82121045081E8406u64, 0x020B101001010824u64, 0x0012098802008090u64, 0x0008082080200888u64,
+    0x2000011040312040u64, 0x224882C420200081u64, 0x0000004410041000u64, 0x2308004232012001u64,
+    0x8020120808012840u64, 0x8020120808012840u64, 0x2018100102040011u64, 0x4018000114110000u64,
+    0x888400021022004Cu64, 0x882200004120A000u64, 0x002440010C022000u64, 0x00004000804C1088u64,
+    0x0104420010500110u64, 0x4008610002120200u64, 0x0404044190084280u64, 0x1820120000400440u64,
+    0x4001001001004000u64, 0x21100041B2091001u64, 0x9202023054011100u64, 0x4004085008210402u64,
+    0x4051111010410401u64, 0x0048080403020440u64, 0x1000840400404040u64, 0x0002020080080082u64,
+    0x4120080410088200u64, 0x8C10100140088244u64, 0x0002180220890090u64, 0x80680200812020AAu64,
+    0x681082084009201Au64, 0x1603009025089002u64, 0x0000606068001012u64, 0x2850104200804800u64,
+    0x4065045008801400u64, 0x2024102048400200u64, 0x80A0420401004060u64, 0x040400C20200D040u64,
+    0x0000821002A10008u64, 0x0090808C09600002u64, 0x2488804044100000u64, 0x0021180020880040u64,
+    0x2000001202020030u64, 0x0040124210010011u64, 0x0010203200822901u64, 0x026210A400808110u64,
+    0x014200450401A020u64, 0x2308004232012001u64, 0x0000100042080400u64, 0x1104808800420204u64,
+    0x8204880012020200u64, 0x0201080890210200u64, 0x82121045081E8406u64, 0x0010203200822901u64,
+];

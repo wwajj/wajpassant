@@ -126,7 +126,7 @@ pub fn init_attacks() {
 
         // Bishop Magic Initialization (Carry-Rippler)
         let mask = bishop_mask.0;
-        let magic = unsafe { BISHOP_MAGICS[sq_idx] };
+        let magic = BISHOP_MAGICS[sq_idx];
         let shift = 64 - bishop_mask.count();
         let mut occupancy = Bitboard::empty();
 
@@ -142,7 +142,7 @@ pub fn init_attacks() {
 
         // Rook Magic Initialization (Carry-Rippler)
         let mask = rook_mask.0;
-        let magic = unsafe { ROOK_MAGICS[sq_idx] };
+        let magic = ROOK_MAGICS[sq_idx];
         let shift = 64 - rook_mask.count();
         let mut occupancy = Bitboard::empty();
 
