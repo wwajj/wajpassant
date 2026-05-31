@@ -4,6 +4,8 @@
 //! the positions of all pieces using bitboards, as well as maintaining the
 //! game state (side to move, castling rights, en passant, and move clocks).
 
+use std::io::Write;
+
 use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
 use crate::moves::*;
@@ -886,6 +888,43 @@ impl Board {
         for mv in moves {
             if self.make_move(mv) {
                 nodes += self.perft(depth - 1);
+                self.unmake_move(mv);
+            }
+        }
+
+        nodes
+    }
+
+    /// A debugging version of Perft that writes every move sequence to a text file.
+    pub fn perft_debug(&mut self, depth: u8, path: String, file: &mut std::fs::File) -> u64 {
+        if depth == 0 {
+            writeln!(file, "{}", path).unwrap();
+            return 1;
+        }
+
+        let mut nodes: u64 = 0;
+        let moves = self.generate_all_moves(); 
+
+        for mv in moves {
+            if self.make_move(mv) {
+                let start_idx = mv.get_start() as usize;
+                let target_idx = mv.get_target() as usize;
+                
+                let s_file = (b'a' + (start_idx % 8) as u8) as char;
+                let s_rank = (b'1' + (start_idx / 8) as u8) as char;
+                let t_file = (b'a' + (target_idx % 8) as u8) as char;
+                let t_rank = (b'1' + (target_idx / 8) as u8) as char;
+                
+                let move_str = format!("{}{}{}{}", s_file, s_rank, t_file, t_rank);
+                
+                let new_path = if path.is_empty() {
+                    move_str
+                } else {
+                    format!("{} {}", path, move_str)
+                };
+
+                nodes += self.perft_debug(depth - 1, new_path, file);
+                
                 self.unmake_move(mv);
             }
         }

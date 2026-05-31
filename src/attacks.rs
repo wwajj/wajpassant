@@ -42,6 +42,7 @@ pub static mut ROOK_ATTACKS: [[Bitboard; ROOK_BLOCKERS as usize]; 64] = [[Bitboa
 
 /// Populates all static attack arrays and Magic Bitboard tables.
 pub fn init_attacks() {
+    print!("Generating Attack Lookup Tables...");
     for sq_idx in 0..64 {
         let curr_sq = SQUARES[sq_idx];
         let bb = Bitboard::empty().set_bit(curr_sq);
@@ -125,7 +126,7 @@ pub fn init_attacks() {
 
         // Bishop Magic Initialization (Carry-Rippler)
         let mask = bishop_mask.0;
-        let magic = BISHOP_MAGICS[sq_idx];
+        let magic = unsafe { BISHOP_MAGICS[sq_idx] };
         let shift = 64 - bishop_mask.count();
         let mut occupancy = Bitboard::empty();
 
@@ -141,7 +142,7 @@ pub fn init_attacks() {
 
         // Rook Magic Initialization (Carry-Rippler)
         let mask = rook_mask.0;
-        let magic = ROOK_MAGICS[sq_idx];
+        let magic = unsafe { ROOK_MAGICS[sq_idx] };
         let shift = 64 - rook_mask.count();
         let mut occupancy = Bitboard::empty();
 
@@ -155,6 +156,7 @@ pub fn init_attacks() {
             if occupancy == Bitboard::empty() { break; }
         }
     }
+    print!("Attack Lookup Tables Generated Successfully!");
 }
 
 // --- Mask Generators ---
