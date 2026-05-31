@@ -1,7 +1,10 @@
 pub mod attacks;
 pub mod bitboard;
 pub mod board;
+pub mod eval;
 pub mod magics;
 pub mod movegen;
 pub mod movelist;
 pub mod moves;
+pub mod search;
+pub mod uci;

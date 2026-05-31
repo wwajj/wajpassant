@@ -8,6 +8,7 @@ use std::io::Write;
 
 use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
+use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE};
 use crate::moves::*;
 
 /// Starting position bitboard masks for White pieces.
@@ -99,17 +100,24 @@ pub struct UndoRecord {
     pub halfmove_clock: u16,
     /// PieceType captured by move.
     pub captured_piece: Option<PieceType>,
+    /// evaluation tracking
+    pub mg_score: i32,
+    pub eg_score: i32,
+    pub phase: i32,
 }
 
 // Inherent methods
 impl UndoRecord {
     /// Constructs an `UndoRecord`
-    pub fn new(en_passant: Option<Square>, castling_rights: u8, halfmove_clock: u16, captured_piece:Option<PieceType>) -> Self {
+    pub fn new(en_passant: Option<Square>, castling_rights: u8, halfmove_clock: u16, captured_piece:Option<PieceType>, mg_score: i32, eg_score: i32, phase: i32) -> Self {
         Self {
             en_passant: en_passant,
             castling_rights: castling_rights,
             halfmove_clock: halfmove_clock,
             captured_piece: captured_piece,
+            mg_score: mg_score,
+            eg_score: eg_score,
+            phase: phase,
         }
     }
 }
@@ -133,6 +141,10 @@ pub struct Board {
     pub fullmove_number: u16,
     /// The history stack used to unmake moves
     pub history: Vec<UndoRecord>,
+    /// evaluation tracking
+    pub mg_score: i32,
+    pub eg_score: i32,
+    pub phase: i32,
 }
 
 // Standard traits 
@@ -173,6 +185,9 @@ impl Default for Board {
             halfmove_clock: 0,
             fullmove_number: 1,
             history: Vec::with_capacity(256),
+            mg_score: 0,
+            eg_score: 0,
+            phase: 0,
         }
     }
 }
@@ -193,6 +208,9 @@ impl Board {
             halfmove_clock: 0,
             fullmove_number: 1,
             history: Vec::with_capacity(256),
+            mg_score: 0,
+            eg_score: 0,
+            phase: 0,
         }
     }
 
@@ -267,6 +285,7 @@ impl Board {
         }
 
         board.update_occupancies();
+        board.init_eval();
         board
     }
 
@@ -483,11 +502,15 @@ impl Board {
 
         let moved = self.piece_at(start).unwrap();
         let captured = self.piece_at(target);
+        
         let record = UndoRecord::new(
             self.en_passant,
             self.castling_rights,
             self.halfmove_clock,
             captured,
+            self.mg_score, 
+            self.eg_score, 
+            self.phase,
         );
         self.history.push(record);
 
@@ -497,45 +520,63 @@ impl Board {
         let move_mask = (1u64 << start as u64) | (1u64 << target as u64);
         self.pieces[us as usize][moved as usize] ^= Bitboard(move_mask);
 
+        self.remove_eval(us, moved, start);
+        self.add_eval(us, moved, target);
+
         let target_mask = Bitboard(1u64 << target as u64);
         match flag {
             FLAG_QUIET | FLAG_DOUBLE_PAWN => {},
             
             FLAG_CAPTURE => {
                 self.pieces[them as usize][captured.unwrap() as usize] ^= target_mask;
+                self.remove_eval(them, captured.unwrap(), target);
             },
             FLAG_PROMO_N | FLAG_PROMO_B | FLAG_PROMO_R | FLAG_PROMO_Q => {
                 let promo_piece = mv.get_promotion_piece().unwrap();
                 self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
                 self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+                
+                // We moved a pawn to the target square in step 3, so remove it, then add the promoted piece
+                self.remove_eval(us, PieceType::Pawn, target);
+                self.add_eval(us, promo_piece, target);
             },
-
             FLAG_CAPTURE_PROMO_N | FLAG_CAPTURE_PROMO_B | FLAG_CAPTURE_PROMO_R | FLAG_CAPTURE_PROMO_Q => {
                 let promo_piece = mv.get_promotion_piece().unwrap();
                 self.pieces[them as usize][captured.unwrap() as usize] ^= target_mask;
                 self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
                 self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+                
+                self.remove_eval(them, captured.unwrap(), target);
+                self.remove_eval(us, PieceType::Pawn, target);
+                self.add_eval(us, promo_piece, target);
             },
-            
             FLAG_EN_PASSANT => {
                 let capture_sq = if us == Color::White { (target as usize) - 8 } else { (target as usize) + 8 };
-                self.pieces[them as usize][PieceType::Pawn as usize] ^= Bitboard(1u64 << capture_sq);
+                self.pieces[them as usize][PieceType::Pawn as usize] ^= Bitboard(1u64 << capture_sq as u64);
+                
+                self.remove_eval(them, PieceType::Pawn, SQUARES[capture_sq]);
             },
-            
             FLAG_KING_CASTLE => {
                 let rook_mask = 0b1010_0000;
                 let shift = if us == Color::White { 0 } else { 56 };
                 self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+                
+                let (r_start, r_target) = if us == Color::White { (7, 5) } else { (63, 61) }; // H1->F1 or H8->F8
+                self.remove_eval(us, PieceType::Rook, SQUARES[r_start]);
+                self.add_eval(us, PieceType::Rook, SQUARES[r_target]);
             },
-            
             FLAG_QUEEN_CASTLE => {
                 let rook_mask = 0b0000_1001;
                 let shift = if us == Color::White { 0 } else { 56 };
                 self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+                
+                let (r_start, r_target) = if us == Color::White { (0, 3) } else { (56, 59) }; // A1->D1 or A8->D8
+                self.remove_eval(us, PieceType::Rook, SQUARES[r_start]);
+                self.add_eval(us, PieceType::Rook, SQUARES[r_target]);
             },
-            
             _ => panic!("Invalid move flag encountered during make move."),
         };
+
         if (mv.is_capture()) || (moved == PieceType::Pawn) {
             self.halfmove_clock = 0;
         } else {
@@ -583,7 +624,7 @@ impl Board {
         let moved = if mv.is_promotion() {
             PieceType::Pawn
         } else {
-            self.piece_at(target).expect("No piece found on target square udring unmake move")
+            self.piece_at(target).expect("No piece found on target square during unmake move")
         };
 
         let move_mask = Bitboard((1u64 << start as u64) | (1u64 << target as u64));
@@ -633,6 +674,10 @@ impl Board {
         if us == Color:: Black {
             self.fullmove_number -= 1;
         }
+
+        self.mg_score = record.mg_score;
+        self.eg_score = record.eg_score;
+        self.phase = record.phase;
 
         self.update_occupancies();
     }
@@ -930,5 +975,72 @@ impl Board {
         }
 
         nodes
+    }
+
+    /// Calculates the static evaluation from scratch.
+    /// Only used when a FEN is loaded.
+    pub fn init_eval(&mut self) {
+        self.mg_score = 0;
+        self.eg_score = 0;
+        self.phase = 0;
+
+        for side in 0..2 {
+            let sign = if side == Color::White as usize { 1 } else { -1 };
+            
+            for pt in 0..6 {
+                let mut bb = self.pieces[side][pt];
+                
+                while bb.0 != 0 {
+                    let sq = bb.get_lsb() as usize;
+                    bb = bb.clear_bit(SQUARES[sq]);
+
+                    let lookup_sq = if side == Color::Black as usize { sq ^ 56 } else { sq };
+
+                    self.mg_score += sign * (MATERIAL_MG[pt] + PST_MG[pt][lookup_sq]);
+                    self.eg_score += sign * (MATERIAL_EG[pt] + PST_EG[pt][lookup_sq]);
+
+                    self.phase += PHASE_WEIGHTS[pt];
+                }
+            }
+        }
+        
+        if self.phase > MAX_PHASE { self.phase = MAX_PHASE; }
+    }
+
+    /// Returns the tapered evaluation of the current position in centipawns.
+    pub fn evaluate(&self) -> i32 {
+        let p = self.phase.min(MAX_PHASE);
+        
+        let score = (self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE;
+        
+        if self.side_to_move == Color::White {
+            score
+        } else {
+            -score
+        }
+    }
+
+    /// Incrementally adds a piece's value to the global board evaluation.
+    #[inline(always)]
+    fn add_eval(&mut self, side: Color, pt: PieceType, sq: Square) {
+        let sign = if side == Color::White { 1 } else { -1 };
+        let lookup_sq = if side == Color::Black { (sq as usize) ^ 56 } else { sq as usize };
+        let pt_idx = pt as usize;
+
+        self.mg_score += sign * (MATERIAL_MG[pt_idx] + PST_MG[pt_idx][lookup_sq]);
+        self.eg_score += sign * (MATERIAL_EG[pt_idx] + PST_EG[pt_idx][lookup_sq]);
+        self.phase += PHASE_WEIGHTS[pt_idx];
+    }
+
+    /// Incrementally removes a piece's value from the global board evaluation.
+    #[inline(always)]
+    fn remove_eval(&mut self, side: Color, pt: PieceType, sq: Square) {
+        let sign = if side == Color::White { 1 } else { -1 };
+        let lookup_sq = if side == Color::Black { (sq as usize) ^ 56 } else { sq as usize };
+        let pt_idx = pt as usize;
+
+        self.mg_score -= sign * (MATERIAL_MG[pt_idx] + PST_MG[pt_idx][lookup_sq]);
+        self.eg_score -= sign * (MATERIAL_EG[pt_idx] + PST_EG[pt_idx][lookup_sq]);
+        self.phase -= PHASE_WEIGHTS[pt_idx];
     }
 }
