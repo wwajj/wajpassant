@@ -41,6 +41,12 @@ pub const FLAG_CAPTURE_PROMO_R: u16 = 14;
 /// Flag for a capturing pawn promotion to a Queen.
 pub const FLAG_CAPTURE_PROMO_Q: u16 = 15;
 
+/// Standard array of flags to iterate over when a quiet pawn promotion occurs.
+pub const PROMO_LIST: [u16; 4] = [FLAG_PROMO_N, FLAG_PROMO_B, FLAG_PROMO_R, FLAG_PROMO_Q];
+/// Standard array of flags to iterate over when a capturing pawn promotion occurs.
+pub const CAPTURE_PROMO_LIST: [u16; 4] = [FLAG_CAPTURE_PROMO_N, FLAG_CAPTURE_PROMO_B, FLAG_CAPTURE_PROMO_R, FLAG_CAPTURE_PROMO_Q];
+
+
 /// A highly optimized 16-bit chess move.
 /// 
 /// **Bit Layout:**

@@ -4,7 +4,9 @@
 //! the positions of all pieces using bitboards, as well as maintaining the
 //! game state (side to move, castling rights, en passant, and move clocks).
 
-use crate::bitboard::{Bitboard, Square, SQUARES};
+use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
+use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
+use crate::moves::*;
 
 /// Starting position bitboard masks for White pieces.
 pub const WHITE_START: u64 = 0x000000000000FFFF;
@@ -23,6 +25,18 @@ pub const BLACK_BISHOPS: u64 = 0x2400000000000000;
 pub const BLACK_ROOKS: u64 = 0x8100000000000000;
 pub const BLACK_QUEENS: u64 = 0x0800000000000000;
 pub const BLACK_KINGS: u64 = 0x1000000000000000; 
+
+// Array used to strip castling rights.
+pub const CASTLING_PERM: [u8; 64] = [
+    13, 15, 15, 15, 12, 15, 15, 14, // Rank 1
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 2
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 3
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 4
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 5
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 6
+    15, 15, 15, 15, 15, 15, 15, 15, // Rank 7
+     7, 15, 15, 15,  3, 15, 15, 11, // Rank 8
+];
 
 /// Represents the two players in a chess game.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -69,6 +83,35 @@ impl PieceType {
     }
 }
 
+/// A snapshot of the irreversible aspects of the board state.
+///
+/// Pushed to the board's history stack before a move is made, allowing
+/// the engine to perfectly restore the position during `unmake_move`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct UndoRecord {
+    /// The target square for a valid En Passant capture, if any.
+    pub en_passant: Option<Square>,
+    /// Bitmask representing castling availability (WK=1, WQ=2, BK=4, BQ=8).
+    pub castling_rights: u8,
+    /// The number of halfmoves since the last capture or pawn advance (for the 50-move rule).
+    pub halfmove_clock: u16,
+    /// PieceType captured by move.
+    pub captured_piece: Option<PieceType>,
+}
+
+// Inherent methods
+impl UndoRecord {
+    /// Constructs an `UndoRecord`
+    pub fn new(en_passant: Option<Square>, castling_rights: u8, halfmove_clock: u16, captured_piece:Option<PieceType>) -> Self {
+        Self {
+            en_passant: en_passant,
+            castling_rights: castling_rights,
+            halfmove_clock: halfmove_clock,
+            captured_piece: captured_piece,
+        }
+    }
+}
+
 /// The master representation of the chess board state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Board {
@@ -86,6 +129,8 @@ pub struct Board {
     pub halfmove_clock: u16,
     /// The number of full moves in the game. Increments after Black's move.
     pub fullmove_number: u16,
+    /// The history stack used to unmake moves
+    pub history: Vec<UndoRecord>,
 }
 
 // Standard traits 
@@ -125,6 +170,7 @@ impl Default for Board {
             castling_rights: 0b1111,
             halfmove_clock: 0,
             fullmove_number: 1,
+            history: Vec::with_capacity(256),
         }
     }
 }
@@ -144,6 +190,7 @@ impl Board {
             castling_rights: 0,
             halfmove_clock: 0,
             fullmove_number: 1,
+            history: Vec::with_capacity(256),
         }
     }
 
@@ -172,7 +219,7 @@ impl Board {
                     'r' => PieceType::Rook,
                     'q' => PieceType::Queen,
                     'k' => PieceType::King,
-                    _ => panic!("Invalid FEN piece character"),
+                    _ => panic!("Invalid FEN piece character."),
                 };
 
                 let sq = SQUARES[rank * 8 + file];
@@ -381,5 +428,468 @@ impl Board {
 
         self.occupancies[side as usize] = self.occupancies[side as usize].set_bit(sq);
         self.occupancies[2] = self.occupancies[2].set_bit(sq);
+    }
+
+    /// Determines if a square is under attack by the given color
+    /// returns `true` if the square is under attack, `false` otherwise
+    pub fn is_square_attacked(&self, sq: Square, attacker: Color) -> bool {
+        let sq_idx = sq as usize;
+        let attacker_idx = attacker as usize;
+        let occ = self.occupancies[2];
+
+        if (unsafe { KNIGHT_ATTACKS[sq_idx] } & self.pieces[attacker_idx][PieceType::Knight as usize]).0 != 0 {
+            return true;
+        };
+        if (unsafe { KING_ATTACKS[sq_idx] } & self.pieces[attacker_idx][PieceType::King as usize]).0 != 0 {
+            return true;
+        };
+
+        let diagonal_attackers = self.pieces[attacker_idx][PieceType::Bishop as usize]
+                               | self.pieces[attacker_idx][PieceType::Queen as usize];
+        if (get_bishop_attacks(sq, occ) & diagonal_attackers).0 != 0 {
+            return true;
+        }
+
+        let orthogonal_attackers = self.pieces[attacker_idx][PieceType::Rook as usize]
+                                 | self.pieces[attacker_idx][PieceType::Queen as usize];
+        if (get_rook_attacks(sq, occ) & orthogonal_attackers).0 != 0 {
+            return true;
+        }
+
+        let pawns = self.pieces[attacker_idx][PieceType::Pawn as usize];
+        let sq_bb = Bitboard(1u64 << sq_idx as u64);
+
+        if attacker == Color::White {
+            let attacker_mask = ((sq_bb & Bitboard(NOT_H_FILE)) >> 7)
+                              | ((sq_bb & Bitboard(NOT_A_FILE)) >> 9);
+            if (attacker_mask & pawns).0 != 0 { return true; }
+        } else {
+            let attacker_mask = ((sq_bb & Bitboard(NOT_A_FILE)) << 7)
+                              | ((sq_bb & Bitboard(NOT_H_FILE)) << 9);
+            if (attacker_mask & pawns).0 != 0 { return true; }
+        }
+
+        false
+    }
+
+    /// Executes a move on the board
+    /// Returns `true` if the move is legal, `false` if the move leaves the King in check
+    pub fn make_move(&mut self, mv: Move) -> bool {
+        let start = mv.get_start();
+        let target = mv.get_target();
+        let flag = mv.get_flags();
+
+        let moved = self.piece_at(start).unwrap();
+        let captured = self.piece_at(target);
+        let record = UndoRecord::new(
+            self.en_passant,
+            self.castling_rights,
+            self.halfmove_clock,
+            captured,
+        );
+        self.history.push(record);
+
+        let us = self.side_to_move;
+        let them = us.flip();
+
+        let move_mask = (1u64 << start as u64) | (1u64 << target as u64);
+        self.pieces[us as usize][moved as usize] ^= Bitboard(move_mask);
+
+        let target_mask = Bitboard(1u64 << target as u64);
+        match flag {
+            FLAG_QUIET | FLAG_DOUBLE_PAWN => {},
+            
+            FLAG_CAPTURE => {
+                self.pieces[them as usize][captured.unwrap() as usize] ^= target_mask;
+            },
+            FLAG_PROMO_N | FLAG_PROMO_B | FLAG_PROMO_R | FLAG_PROMO_Q => {
+                let promo_piece = mv.get_promotion_piece().unwrap();
+                self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
+                self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+            },
+
+            FLAG_CAPTURE_PROMO_N | FLAG_CAPTURE_PROMO_B | FLAG_CAPTURE_PROMO_R | FLAG_CAPTURE_PROMO_Q => {
+                let promo_piece = mv.get_promotion_piece().unwrap();
+                self.pieces[them as usize][captured.unwrap() as usize] ^= target_mask;
+                self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
+                self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+            },
+            
+            FLAG_EN_PASSANT => {
+                let capture_sq = if us == Color::White { (target as usize) - 8 } else { (target as usize) + 8 };
+                self.pieces[them as usize][PieceType::Pawn as usize] ^= Bitboard(1u64 << capture_sq);
+            },
+            
+            FLAG_KING_CASTLE => {
+                let rook_mask = 0b1010_0000;
+                let shift = if us == Color::White { 0 } else { 56 };
+                self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+            },
+            
+            FLAG_QUEEN_CASTLE => {
+                let rook_mask = 0b0000_1001;
+                let shift = if us == Color::White { 0 } else { 56 };
+                self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+            },
+            
+            _ => panic!("Invalid move flag encountered during make move."),
+        };
+        if (mv.is_capture()) || (moved == PieceType::Pawn) {
+            self.halfmove_clock = 0;
+        } else {
+            self.halfmove_clock += 1;
+        }
+
+        if us == Color::Black {
+            self.fullmove_number += 1;
+        }
+
+        self.castling_rights &= CASTLING_PERM[start as usize];
+        self.castling_rights &= CASTLING_PERM[target as usize];
+
+        if flag == FLAG_DOUBLE_PAWN {
+            let ep_sq = if us == Color::White { (target as usize) - 8 } else { (target as usize) + 8 };
+            self.en_passant = Some(SQUARES[ep_sq as usize]);
+        } else {
+            self.en_passant = None;
+        }
+
+        self.side_to_move = self.side_to_move.flip();
+        self.update_occupancies();
+
+        let king_sq = self.pieces[us as usize][PieceType::King as usize].get_lsb();
+        if self.is_square_attacked(king_sq, them) { 
+            self.unmake_move(mv);
+            return false;
+        };
+
+        true
+    }
+
+    /// Reverses the last move made on the board, restoring the previous state
+    pub fn unmake_move(&mut self, mv:Move) {
+        let record = self.history.pop().expect("Tried to unmake a move with empty UndoRecord Vector");
+
+        self.side_to_move = self.side_to_move.flip();
+        let us = self.side_to_move;
+        let them = self.side_to_move.flip();
+
+        let start = mv.get_start();
+        let target = mv.get_target();
+        let flag = mv.get_flags();
+
+        let moved = if mv.is_promotion() {
+            PieceType::Pawn
+        } else {
+            self.piece_at(target).expect("No piece found on target square udring unmake move")
+        };
+
+        let move_mask = Bitboard((1u64 << start as u64) | (1u64 << target as u64));
+        self.pieces[us as usize][moved as usize] ^= move_mask;
+
+        let target_mask = Bitboard(1u64 << target as u64);
+        match flag {
+            FLAG_QUIET | FLAG_DOUBLE_PAWN => {}, 
+            FLAG_CAPTURE => {
+                self.pieces[them as usize][record.captured_piece.unwrap() as usize] ^= target_mask;
+            },
+            FLAG_PROMO_N | FLAG_PROMO_B | FLAG_PROMO_R | FLAG_PROMO_Q => {
+                let promo_piece = mv.get_promotion_piece().unwrap();
+                self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
+                self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+            },
+            FLAG_CAPTURE_PROMO_N | FLAG_CAPTURE_PROMO_B | FLAG_CAPTURE_PROMO_R | FLAG_CAPTURE_PROMO_Q => {
+                let promo_piece = mv.get_promotion_piece().unwrap();
+                self.pieces[them as usize][record.captured_piece.unwrap() as usize] ^= target_mask;
+                self.pieces[us as usize][PieceType::Pawn as usize] ^= target_mask;
+                self.pieces[us as usize][promo_piece as usize] ^= target_mask;
+            },
+            FLAG_EN_PASSANT => {
+                let capture_sq = if us == Color::White { 
+                    (target as usize) - 8 
+                } else { 
+                    (target as usize) + 8 
+                };
+                self.pieces[them as usize][PieceType::Pawn as usize] ^= Bitboard(1u64 << capture_sq);
+            },
+            FLAG_KING_CASTLE => {
+                let rook_mask = 0b1010_0000;
+                let shift = if us == Color::White { 0 } else { 56 };
+                self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+            },
+            FLAG_QUEEN_CASTLE => {
+                let rook_mask = 0b0000_1001;
+                let shift = if us == Color::White { 0 } else { 56 };
+                self.pieces[us as usize][PieceType::Rook as usize] ^= Bitboard(rook_mask << shift);
+            },
+            _ => panic!("Invalid move flag encountered during unmake_move."),
+        }
+
+        self.en_passant = record.en_passant;
+        self.castling_rights = record.castling_rights;
+        self.halfmove_clock = record.halfmove_clock;
+        if us == Color:: Black {
+            self.fullmove_number -= 1;
+        }
+
+        self.update_occupancies();
+    }
+
+    /// Extracts individual target squares from an attack bitboard and creates `Move` structs.
+    #[inline(always)]
+    fn serialize_moves(&self, moves: &mut Vec<Move>, start: Square, mut attacks: Bitboard, enemies: Bitboard) {
+        while attacks.0 != 0 {
+            // Find the lowest set bit (the target square)
+            let target_idx = attacks.get_lsb();
+            let target = SQUARES[target_idx as usize];
+            
+            // Clear that bit so we don't process it again in the next loop iteration
+            attacks = attacks.clear_bit(target);
+
+            // If the target square is occupied by an enemy, it's a capture. Otherwise, quiet.
+            let flag = if enemies.is_occupied(target) { FLAG_CAPTURE } else { FLAG_QUIET };
+
+            moves.push(Move::build(start, target, flag));
+        }
+    }
+
+    /// Generates all pseudo-legal moves for the current player in the given position.
+    ///
+    /// This function  generates moves that follow piece movement rules, but it does 
+    /// NOT verify if the move leaves the King in check. 
+    pub fn generate_all_moves(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(256);
+
+        let us = self.side_to_move as usize;
+        let them = self.side_to_move.flip() as usize;
+
+        let occ_us = self.occupancies[us];
+        let occ_them = self.occupancies[them];
+        let occ_all = self.occupancies[2];
+
+        let mut knights = self.pieces[us][PieceType::Knight as usize];
+        while knights.0 != 0 {
+            let start_idx = knights.get_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            knights = knights.clear_bit(start_sq);
+            let attacks = unsafe { KNIGHT_ATTACKS[start_idx as usize] } & !occ_us;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut kings = self.pieces[us][PieceType::King as usize];
+        while kings.0 != 0 {
+            let start_idx = kings.get_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            kings = kings.clear_bit(start_sq);
+
+            let attacks = unsafe { KING_ATTACKS[start_idx as usize] } & !occ_us;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut diagonal_sliders = self.pieces[us][PieceType::Bishop as usize] 
+                                 | self.pieces[us][PieceType::Queen as usize];
+        while diagonal_sliders.0 != 0 {
+            let start_idx = diagonal_sliders.get_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            diagonal_sliders = diagonal_sliders.clear_bit(start_sq);
+
+            let attacks = get_bishop_attacks(start_sq, occ_all) & !occ_us;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut orthogonal_sliders = self.pieces[us][PieceType::Rook as usize] 
+                                   | self.pieces[us][PieceType::Queen as usize];
+        while orthogonal_sliders.0 != 0 {
+            let start_idx = orthogonal_sliders.get_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            orthogonal_sliders = orthogonal_sliders.clear_bit(start_sq);
+
+            let attacks = get_rook_attacks(start_sq, occ_all) & !occ_us;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut pawns = self.pieces[us][PieceType::Pawn as usize];
+        let not_a_file = Bitboard(0xFEFEFEFEFEFEFEFE);
+        let not_h_file = Bitboard(0x7F7F7F7F7F7F7F7F);
+
+        while pawns.0 != 0 {
+            let start_idx = pawns.get_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            let start_bb = Bitboard(1u64 << (start_idx as u64));
+            pawns = pawns.clear_bit(start_sq);
+
+            if us == Color::White as usize {
+                let rank = (start_idx as usize) / 8;
+
+                let single_push = Bitboard(start_bb.0 << 8) & !occ_all;
+                if single_push.0 != 0 {
+                    let target_idx = (start_idx as usize) + 8;
+                    let target_sq = SQUARES[target_idx as usize];
+
+                    if target_idx / 8 == 7 { 
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_N));
+                    } else { 
+                        moves.push(Move::build(start_sq, target_sq, FLAG_QUIET));
+
+                        if rank == 1 {
+                            let double_push = Bitboard(start_bb.0 << 16) & !occ_all;
+                            if double_push.0 != 0 {
+                                let d_sq = SQUARES[(start_idx as usize) + 16];
+                                moves.push(Move::build(start_sq, d_sq, FLAG_DOUBLE_PAWN));
+                            }
+                        }
+                    }
+                }
+
+                let attacks = Bitboard(((start_bb.0 & not_a_file.0) << 7) | ((start_bb.0 & not_h_file.0) << 9));
+                let mut valid_captures = attacks & occ_them;
+
+                while valid_captures.0 != 0 {
+                    let target_idx = valid_captures.get_lsb();
+                    let target_sq = SQUARES[target_idx as usize];
+                    valid_captures = valid_captures.clear_bit(target_sq);
+
+                    if (target_idx as usize) / 8 == 7 {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_N));
+                    } else {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE));
+                    }
+                }
+
+                if let Some(ep_sq) = self.en_passant {
+                    let ep_bb = Bitboard(1u64 << (ep_sq as usize) as u64);
+                    if (attacks & ep_bb).0 != 0 {
+                        moves.push(Move::build(start_sq, ep_sq, FLAG_EN_PASSANT));
+                    }
+                }
+
+            } else {
+                let rank = (start_idx as usize) / 8;
+
+                let single_push = Bitboard(start_bb.0 >> 8) & !occ_all;
+                if single_push.0 != 0 {
+                    let target_idx = (start_idx as usize) - 8;
+                    let target_sq = SQUARES[target_idx as usize];
+
+                    if target_idx / 8 == 0 { 
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_N));
+                    } else { 
+                        moves.push(Move::build(start_sq, target_sq, FLAG_QUIET));
+
+                        if rank == 6 {
+                            let double_push = Bitboard(start_bb.0 >> 16) & !occ_all;
+                            if double_push.0 != 0 {
+                                let d_sq = SQUARES[(start_idx as usize) - 16];
+                                moves.push(Move::build(start_sq, d_sq, FLAG_DOUBLE_PAWN));
+                            }
+                        }
+                    }
+                }
+
+                let attacks = Bitboard(((start_bb.0 & not_a_file.0) >> 9) | ((start_bb.0 & not_h_file.0) >> 7));
+                let mut valid_captures = attacks & occ_them;
+
+                while valid_captures.0 != 0 {
+                    let target_idx = valid_captures.get_lsb();
+                    let target_sq = SQUARES[target_idx as usize];
+                    valid_captures = valid_captures.clear_bit(target_sq);
+
+                    if (target_idx as usize) / 8 == 0 {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_N));
+                    } else {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE));
+                    }
+                }
+
+                if let Some(ep_sq) = self.en_passant {
+                    let ep_bb = Bitboard(1u64 << (ep_sq as usize) as u64);
+                    if (attacks & ep_bb).0 != 0 {
+                        moves.push(Move::build(start_sq, ep_sq, FLAG_EN_PASSANT));
+                    }
+                }
+            }
+        }
+
+        if us == Color::White as usize {
+            let them_color = Color::Black;
+            if (self.castling_rights & 1) != 0 {
+                if !occ_all.is_occupied(SQUARES[5]) && !occ_all.is_occupied(SQUARES[6]) {
+                    if !self.is_square_attacked(SQUARES[4], them_color)
+                        && !self.is_square_attacked(SQUARES[5], them_color)
+                        && !self.is_square_attacked(SQUARES[6], them_color) {
+                        moves.push(Move::build(SQUARES[4], SQUARES[6], FLAG_KING_CASTLE));
+                    }
+                }
+            }
+            if (self.castling_rights & 2) != 0 {
+                if !occ_all.is_occupied(SQUARES[1]) 
+                    && !occ_all.is_occupied(SQUARES[2]) 
+                    && !occ_all.is_occupied(SQUARES[3]) {
+                    if !self.is_square_attacked(SQUARES[4], them_color)
+                        && !self.is_square_attacked(SQUARES[3], them_color)
+                        && !self.is_square_attacked(SQUARES[2], them_color) {
+                        moves.push(Move::build(SQUARES[4], SQUARES[2], FLAG_QUEEN_CASTLE));
+                    }
+                }
+            }
+        } else {
+            let them_color = Color::White;
+            if (self.castling_rights & 4) != 0 {
+                if !occ_all.is_occupied(SQUARES[61]) && !occ_all.is_occupied(SQUARES[62]) {
+                    if !self.is_square_attacked(SQUARES[60], them_color)
+                        && !self.is_square_attacked(SQUARES[61], them_color)
+                        && !self.is_square_attacked(SQUARES[62], them_color) {
+                        moves.push(Move::build(SQUARES[60], SQUARES[62], FLAG_KING_CASTLE));
+                    }
+                }
+            }
+            if (self.castling_rights & 8) != 0 {
+                if !occ_all.is_occupied(SQUARES[57]) 
+                    && !occ_all.is_occupied(SQUARES[58]) 
+                    && !occ_all.is_occupied(SQUARES[59]) {
+                    if !self.is_square_attacked(SQUARES[60], them_color)
+                        && !self.is_square_attacked(SQUARES[59], them_color)
+                        && !self.is_square_attacked(SQUARES[58], them_color) {
+                        moves.push(Move::build(SQUARES[60], SQUARES[58], FLAG_QUEEN_CASTLE));
+                    }
+                }
+            }
+        }
+        moves
+    }
+
+    /// Recursively walks the move tree to a given depth and counts the number of leaf nodes.
+    ///
+    /// This is a mathematical correctness test (Performance Test) used to verify 
+    /// the flawless execution of move generation, `make_move`, and `unmake_move`.
+    pub fn perft(&mut self, depth: u8) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+
+        let mut nodes: u64 = 0;
+        
+        let moves = self.generate_all_moves(); 
+
+        for mv in moves {
+            if self.make_move(mv) {
+                nodes += self.perft(depth - 1);
+                self.unmake_move(mv);
+            }
+        }
+
+        nodes
     }
 }

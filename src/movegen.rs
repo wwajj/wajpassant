@@ -22,11 +22,6 @@ pub const SIXTH_RANK: u64 = 0x0000FF0000000000;
 /// Bitmask for the 8th rank.
 pub const EIGHTH_RANK: u64 = 0xFF00000000000000;
 
-/// Standard array of flags to iterate over when a quiet pawn promotion occurs.
-pub const PROMO_LIST: [u16; 4] = [FLAG_PROMO_N, FLAG_PROMO_B, FLAG_PROMO_R, FLAG_PROMO_Q];
-/// Standard array of flags to iterate over when a capturing pawn promotion occurs.
-pub const CAPTURE_PROMO_LIST: [u16; 4] = [FLAG_CAPTURE_PROMO_N, FLAG_CAPTURE_PROMO_B, FLAG_CAPTURE_PROMO_R, FLAG_CAPTURE_PROMO_Q];
-
 // --- Main Generator ---
 
 /// Populates a `MoveList` with all pseudo-legal moves for the current side to move.
