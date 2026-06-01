@@ -42,7 +42,7 @@ pub static mut ROOK_ATTACKS: [[Bitboard; ROOK_BLOCKERS as usize]; 64] = [[Bitboa
 
 /// Populates all static attack arrays and Magic Bitboard tables.
 pub fn init_attacks() {
-    print!("Generating Attack Lookup Tables...");
+    print!("Generating Attack Lookup Tables...\n");
     for sq_idx in 0..64 {
         let curr_sq = SQUARES[sq_idx];
         let bb = Bitboard::empty().set_bit(curr_sq);
@@ -156,7 +156,7 @@ pub fn init_attacks() {
             if occupancy == Bitboard::empty() { break; }
         }
     }
-    print!("Attack Lookup Tables Generated Successfully!");
+    print!("Attack Lookup Tables Generated Successfully!\n");
 }
 
 // --- Mask Generators ---

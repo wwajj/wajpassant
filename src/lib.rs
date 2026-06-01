@@ -1,6 +1,7 @@
 pub mod attacks;
 pub mod bitboard;
 pub mod board;
+pub mod cli;
 pub mod eval;
 pub mod magics;
 pub mod movegen;
