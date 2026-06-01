@@ -686,14 +686,9 @@ impl Board {
     #[inline(always)]
     fn serialize_moves(&self, moves: &mut Vec<Move>, start: Square, mut attacks: Bitboard, enemies: Bitboard) {
         while attacks.0 != 0 {
-            // Find the lowest set bit (the target square)
-            let target_idx = attacks.get_lsb();
+            let target_idx = attacks.pop_lsb();
             let target = SQUARES[target_idx as usize];
             
-            // Clear that bit so we don't process it again in the next loop iteration
-            attacks = attacks.clear_bit(target);
-
-            // If the target square is occupied by an enemy, it's a capture. Otherwise, quiet.
             let flag = if enemies.is_occupied(target) { FLAG_CAPTURE } else { FLAG_QUIET };
 
             moves.push(Move::build(start, target, flag));
@@ -716,19 +711,16 @@ impl Board {
 
         let mut knights = self.pieces[us][PieceType::Knight as usize];
         while knights.0 != 0 {
-            let start_idx = knights.get_lsb();
+            let start_idx = knights.pop_lsb();
             let start_sq = SQUARES[start_idx as usize];
-            knights = knights.clear_bit(start_sq);
             let attacks = unsafe { KNIGHT_ATTACKS[start_idx as usize] } & !occ_us;
             self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
         }
 
         let mut kings = self.pieces[us][PieceType::King as usize];
         while kings.0 != 0 {
-            let start_idx = kings.get_lsb();
+            let start_idx = kings.pop_lsb();
             let start_sq = SQUARES[start_idx as usize];
-            kings = kings.clear_bit(start_sq);
-
             let attacks = unsafe { KING_ATTACKS[start_idx as usize] } & !occ_us;
             self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
         }
@@ -736,10 +728,8 @@ impl Board {
         let mut diagonal_sliders = self.pieces[us][PieceType::Bishop as usize] 
                                  | self.pieces[us][PieceType::Queen as usize];
         while diagonal_sliders.0 != 0 {
-            let start_idx = diagonal_sliders.get_lsb();
+            let start_idx = diagonal_sliders.pop_lsb();
             let start_sq = SQUARES[start_idx as usize];
-            diagonal_sliders = diagonal_sliders.clear_bit(start_sq);
-
             let attacks = get_bishop_attacks(start_sq, occ_all) & !occ_us;
             self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
         }
@@ -747,23 +737,18 @@ impl Board {
         let mut orthogonal_sliders = self.pieces[us][PieceType::Rook as usize] 
                                    | self.pieces[us][PieceType::Queen as usize];
         while orthogonal_sliders.0 != 0 {
-            let start_idx = orthogonal_sliders.get_lsb();
+            let start_idx = orthogonal_sliders.pop_lsb();
             let start_sq = SQUARES[start_idx as usize];
-            orthogonal_sliders = orthogonal_sliders.clear_bit(start_sq);
-
             let attacks = get_rook_attacks(start_sq, occ_all) & !occ_us;
             self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
         }
 
         let mut pawns = self.pieces[us][PieceType::Pawn as usize];
-        let not_a_file = Bitboard(0xFEFEFEFEFEFEFEFE);
-        let not_h_file = Bitboard(0x7F7F7F7F7F7F7F7F);
 
         while pawns.0 != 0 {
-            let start_idx = pawns.get_lsb();
+            let start_idx = pawns.pop_lsb();
             let start_sq = SQUARES[start_idx as usize];
             let start_bb = Bitboard(1u64 << (start_idx as u64));
-            pawns = pawns.clear_bit(start_sq);
 
             if us == Color::White as usize {
                 let rank = (start_idx as usize) / 8;
@@ -791,13 +776,12 @@ impl Board {
                     }
                 }
 
-                let attacks = Bitboard(((start_bb.0 & not_a_file.0) << 7) | ((start_bb.0 & not_h_file.0) << 9));
+                let attacks = Bitboard(((start_bb.0 & NOT_A_FILE) << 7) | ((start_bb.0 & NOT_H_FILE) << 9));
                 let mut valid_captures = attacks & occ_them;
 
                 while valid_captures.0 != 0 {
-                    let target_idx = valid_captures.get_lsb();
+                    let target_idx = valid_captures.pop_lsb();
                     let target_sq = SQUARES[target_idx as usize];
-                    valid_captures = valid_captures.clear_bit(target_sq);
 
                     if (target_idx as usize) / 8 == 7 {
                         moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
@@ -842,13 +826,12 @@ impl Board {
                     }
                 }
 
-                let attacks = Bitboard(((start_bb.0 & not_a_file.0) >> 9) | ((start_bb.0 & not_h_file.0) >> 7));
+                let attacks = Bitboard(((start_bb.0 & NOT_A_FILE) >> 9) | ((start_bb.0 & NOT_H_FILE) >> 7));
                 let mut valid_captures = attacks & occ_them;
 
                 while valid_captures.0 != 0 {
-                    let target_idx = valid_captures.get_lsb();
+                    let target_idx = valid_captures.pop_lsb();
                     let target_sq = SQUARES[target_idx as usize];
-                    valid_captures = valid_captures.clear_bit(target_sq);
 
                     if (target_idx as usize) / 8 == 0 {
                         moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
@@ -978,7 +961,6 @@ impl Board {
     }
 
     /// Calculates the static evaluation from scratch.
-    /// Only used when a FEN is loaded.
     pub fn init_eval(&mut self) {
         self.mg_score = 0;
         self.eg_score = 0;
@@ -1042,5 +1024,137 @@ impl Board {
         self.mg_score -= sign * (MATERIAL_MG[pt_idx] + PST_MG[pt_idx][lookup_sq]);
         self.eg_score -= sign * (MATERIAL_EG[pt_idx] + PST_EG[pt_idx][lookup_sq]);
         self.phase -= PHASE_WEIGHTS[pt_idx];
+    }
+
+    /// Generates all possible moves that involve a capture
+    pub fn generate_captures(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(32);
+
+        let us = self.side_to_move as usize;
+        let them = self.side_to_move.flip() as usize;
+
+        let occ_them = self.occupancies[them];
+        let occ_all = self.occupancies[2];
+
+        let mut knights = self.pieces[us][PieceType::Knight as usize];
+        while knights.0 != 0 {
+            let start_idx = knights.pop_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+
+            let attacks = unsafe { KNIGHT_ATTACKS[start_idx as usize] } & occ_them;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut kings = self.pieces[us][PieceType::King as usize];
+        while kings.0 != 0 {
+            let start_idx = kings.pop_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+
+            let attacks = unsafe { KING_ATTACKS[start_idx as usize] } & occ_them;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut diagonal_sliders = self.pieces[us][PieceType::Bishop as usize] 
+                                 | self.pieces[us][PieceType::Queen as usize];
+        while diagonal_sliders.0 != 0 {
+            let start_idx = diagonal_sliders.pop_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+
+            let attacks = get_bishop_attacks(start_sq, occ_all) & occ_them;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut orthogonal_sliders = self.pieces[us][PieceType::Rook as usize] 
+                                   | self.pieces[us][PieceType::Queen as usize];
+        while orthogonal_sliders.0 != 0 {
+            let start_idx = orthogonal_sliders.pop_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+
+            let attacks = get_rook_attacks(start_sq, occ_all) & occ_them;
+            self.serialize_moves(&mut moves, start_sq, attacks, occ_them);
+        }
+
+        let mut pawns = self.pieces[us][PieceType::Pawn as usize];
+
+        while pawns.0 != 0 {
+            let start_idx = pawns.pop_lsb();
+            let start_sq = SQUARES[start_idx as usize];
+            let start_bb = Bitboard(1u64 << (start_idx as u64));
+
+            if us == Color::White as usize {
+                let attacks = Bitboard(((start_bb.0 & NOT_A_FILE) << 7) | ((start_bb.0 & NOT_H_FILE) << 9));
+                let mut valid_captures = attacks & occ_them;
+
+                while valid_captures.0 != 0 {
+                    let target_idx = valid_captures.pop_lsb();
+                    let target_sq = SQUARES[target_idx as usize];
+
+                    if (target_idx as usize) / 8 == 7 {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_N));
+                    } else {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE));
+                    }
+                }
+
+                if (start_idx as usize) / 8 == 6 {
+                    let push = Bitboard(start_bb.0 << 8);
+                    if (push.0 & occ_all.0) == 0 {
+                        let target_sq = SQUARES[((start_idx as usize) + 8) as usize];
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_N));
+                    }
+                }
+
+                if let Some(ep_sq) = self.en_passant {
+                    let ep_bb = Bitboard(1u64 << (ep_sq as usize) as u64);
+                    if (attacks & ep_bb).0 != 0 {
+                        moves.push(Move::build(start_sq, ep_sq, FLAG_EN_PASSANT));
+                    }
+                }
+
+            } else {
+                let attacks = Bitboard(((start_bb.0 & NOT_A_FILE) >> 9) | ((start_bb.0 & NOT_H_FILE) >> 7));
+                let mut valid_captures = attacks & occ_them;
+
+                while valid_captures.0 != 0 {
+                    let target_idx = valid_captures.pop_lsb();
+                    let target_sq = SQUARES[target_idx as usize];
+
+                    if (target_idx as usize) / 8 == 0 {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE_PROMO_N));
+                    } else {
+                        moves.push(Move::build(start_sq, target_sq, FLAG_CAPTURE));
+                    }
+                }
+
+               if (start_idx as usize) / 8 == 1 {
+                    let push = Bitboard(start_bb.0 >> 8);
+                    if (push.0 & occ_all.0) == 0 {
+                        let target_sq = SQUARES[((start_idx as usize) - 8) as usize];
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_Q));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_R));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_B));
+                        moves.push(Move::build(start_sq, target_sq, FLAG_PROMO_N));
+                    }
+                } 
+                
+                if let Some(ep_sq) = self.en_passant {
+                    let ep_bb = Bitboard(1u64 << (ep_sq as usize) as u64);
+                    if (attacks & ep_bb).0 != 0 {
+                        moves.push(Move::build(start_sq, ep_sq, FLAG_EN_PASSANT));
+                    }
+                }
+            }
+        }
+        
+        moves
     }
 }

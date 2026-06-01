@@ -50,7 +50,6 @@ pub fn cli_loop() {
             }
         } else {
             // --- ENGINE TURN ---
-            println!("WajPassant is thinking at Depth 5...");
             
             if let Some(best_move) = search_best_move(&mut board, 5) {
                 println!("WajPassant plays: {}", format_move(best_move)); 
