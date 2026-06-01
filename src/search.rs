@@ -60,6 +60,10 @@ pub fn search_best_move(board: &mut Board, depth: u8) -> Option<Move> {
 
 /// The recursive search function. 
 fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32) -> i32 {
+    if board.is_repetition() {
+        return 0;
+    }
+
     if depth == 0 {
         return quiescence_search(board, alpha, beta);
     }

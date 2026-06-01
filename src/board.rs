@@ -10,6 +10,7 @@ use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
 use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE};
 use crate::moves::*;
+use crate::zobrist::{ZOBRIST_PIECES, ZOBRIST_SIDE, ZOBRIST_CASTLING, ZOBRIST_EN_PASSANT};
 
 /// Starting position bitboard masks for White pieces.
 pub const WHITE_START: u64 = 0x000000000000FFFF;
@@ -141,10 +142,12 @@ pub struct Board {
     pub fullmove_number: u16,
     /// The history stack used to unmake moves
     pub history: Vec<UndoRecord>,
-    /// evaluation tracking
+    /// Evaluation tracking
     pub mg_score: i32,
     pub eg_score: i32,
     pub phase: i32,
+    // History stack to track positions over time
+    pub hash_history: Vec<u64>,
 }
 
 // Standard traits 
@@ -176,7 +179,7 @@ impl Default for Board {
             Bitboard::new(WHITE_START | BLACK_START),
         ];
 
-        Self {
+        let mut board = Self {
             pieces,
             occupancies,
             side_to_move: Color::White,
@@ -188,7 +191,13 @@ impl Default for Board {
             mg_score: 0,
             eg_score: 0,
             phase: 0,
-        }
+            hash_history: Vec::new(),
+        };
+
+        let initial_hash = board.calculate_hash();
+        board.hash_history.push(initial_hash);
+
+        board
     }
 }
 
@@ -196,7 +205,7 @@ impl Default for Board {
 impl Board {
     /// Constructs a completely empty `Board` with no pieces.
     pub fn empty() -> Self {
-        Self {
+        let mut board = Self {
             pieces: [
                 [Bitboard::empty(); 6],
                 [Bitboard::empty(); 6]
@@ -211,7 +220,13 @@ impl Board {
             mg_score: 0,
             eg_score: 0,
             phase: 0,
-        }
+            hash_history: Vec::new(),
+        };
+
+        let initial_hash = board.calculate_hash();
+        board.hash_history.push(initial_hash);
+
+        board
     }
 
     /// Parses a standard FEN string and returns a populated `Board`.
@@ -286,6 +301,10 @@ impl Board {
 
         board.update_occupancies();
         board.init_eval();
+
+        let initial_hash = board.calculate_hash();
+        board.hash_history.push(initial_hash);
+
         board
     }
 
@@ -606,11 +625,15 @@ impl Board {
             return false;
         };
 
+        let new_hash = self.calculate_hash();
+        self.hash_history.push(new_hash);
+
         true
     }
 
     /// Reverses the last move made on the board, restoring the previous state
     pub fn unmake_move(&mut self, mv:Move) {
+        self.hash_history.pop();
         let record = self.history.pop().expect("Tried to unmake a move with empty UndoRecord Vector");
 
         self.side_to_move = self.side_to_move.flip();
@@ -1156,5 +1179,53 @@ impl Board {
         }
         
         moves
+    }
+
+    /// Computes the Zobrist hash of the current board position from scratch.
+    pub fn calculate_hash(&self) -> u64 {
+        let mut hash: u64 = 0;
+
+        for i in 0..12 {
+            let mut bb = self.pieces[i / 6][i % 6];
+
+            while bb.0 != 0 {
+                let sq = bb.pop_lsb();
+                hash ^= ZOBRIST_PIECES.get().unwrap()[i][sq as usize];
+            }
+        }
+
+        if self.side_to_move == Color::Black {
+            hash ^= ZOBRIST_SIDE.get().unwrap();
+        }
+
+        hash ^= ZOBRIST_CASTLING.get().unwrap()[self.castling_rights as usize];
+
+        if let Some(ep_sq) = self.en_passant {
+            hash ^= ZOBRIST_EN_PASSANT.get().unwrap()[(ep_sq as usize) % 8];
+        }
+
+        hash
+    }
+
+    /// Checks if the current board is a repitition of previous moves
+    pub fn is_repetition(&self) -> bool {
+        if self.hash_history.len() < 4 {
+            return false;
+        }
+
+        let current_hash = match self.hash_history.last() {
+            Some(&h) => h,
+            None => return false,
+        };
+
+        let mut i = self.hash_history.len() as i32 - 3;
+        while i >= 0 {
+            if self.hash_history[i as usize] == current_hash {
+                return true;
+            }
+            i -= 2;
+        }
+
+        false
     }
 }
