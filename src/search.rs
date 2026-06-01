@@ -3,15 +3,10 @@
 //! This module navigates the game tree using the Negamax framework. It evaluates
 //! future positions and prunes mathematically dead branches to find the optimal
 //! move for the current player.
-//! To improve pruning, this module also implements Quiescence Search to allow
-//! the engine to continue searching through existing captures after reaching its
-//! maximum depth, MVV-LVA sorting to better order nodes to search through, 
-//! Mate Distance Scoring to checkmate more efficiently, and Iterative Deepening
-//! to enable more efficient deeper searches 
 
-use crate::board::Board;
+use crate::board::{Board, PieceType};
 use crate::moves::{Move, FLAG_EN_PASSANT, FLAG_CAPTURE};
-use crate::board::PieceType;
+use crate::tt::{TTFlag, TranspositionTable};
 
 /// A score representing absolute victory (Checkmate).
 pub const INFINITY: i32 = 50000;
@@ -24,8 +19,10 @@ const MVV_LVA_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10000];
 /// position, initiates the Negamax recursion, and returns the best move found.
 pub fn search_best_move(board: &mut Board, depth: u8) -> Option<Move> {
     let mut best_move_so_far: Option<Move> = None;
+    let mut tt = TranspositionTable::new(32);
 
     for current_depth in 1..=depth {
+        tt.clear();
         let mut moves = board.generate_all_moves();
         moves.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move_iterative(board, mv, best_move_so_far)));
 
@@ -40,7 +37,7 @@ pub fn search_best_move(board: &mut Board, depth: u8) -> Option<Move> {
                 continue;
             }
 
-            let score = -negamax(board, current_depth - 1, -beta, -alpha, 1);
+            let score = -negamax(board, current_depth - 1, -beta, -alpha, 1, &mut tt);
             board.unmake_move(mv);
 
             if score > best_score {
@@ -59,7 +56,7 @@ pub fn search_best_move(board: &mut Board, depth: u8) -> Option<Move> {
 }
 
 /// The recursive search function. 
-fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32) -> i32 {
+fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32, tt: &mut TranspositionTable) -> i32 {
     if board.is_repetition() {
         return 0;
     }
@@ -68,9 +65,23 @@ fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32) ->
         return quiescence_search(board, alpha, beta);
     }
 
+    let hash = *board.hash_history.last().unwrap();
+    if let Some(entry) = tt.read(hash, depth) {
+        match entry.flag {
+            TTFlag::Exact => return entry.score,
+            TTFlag::Alpha if entry.score <= alpha => return alpha,
+            TTFlag::Beta if entry.score >= beta => return beta,
+            _ => {}
+        }
+    }
+
     let mut moves = board.generate_all_moves();
-    moves.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move(board, mv)));
+    let tt_move = tt.probe_move(hash);
+    moves.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move_iterative(board, mv, tt_move)));
+
     let mut legal_moves = 0;
+    let mut best_move: Option<Move> = None;
+    let mut tt_flag = TTFlag::Alpha;
 
     for mv in moves {
         if !board.make_move(mv) {
@@ -78,15 +89,18 @@ fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32) ->
         }
         legal_moves += 1;
 
-        let score = -negamax(board, depth - 1, -beta, -alpha, ply + 1);
+        let score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, tt);
         board.unmake_move(mv);
 
         if score >= beta {
+            tt.write(hash, depth, beta, Some(mv), TTFlag::Beta);
             return beta;
         }
         
         if score > alpha {
             alpha = score;
+            tt_flag = TTFlag::Exact;
+            best_move = Some(mv);
         }
     }
 
@@ -101,6 +115,8 @@ fn negamax(board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32) ->
             return 0;
         }
     }
+
+    tt.write(hash, depth, alpha, best_move, tt_flag);
 
     alpha
 }

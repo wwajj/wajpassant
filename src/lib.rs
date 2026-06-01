@@ -8,5 +8,6 @@ pub mod movegen;
 pub mod movelist;
 pub mod moves;
 pub mod search;
+pub mod tt;
 pub mod uci;
 pub mod zobrist;
