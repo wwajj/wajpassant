@@ -86,7 +86,7 @@ fn parse_position(board: &mut Board, tokens: &[&str]) {
 
 /// Parses the "go" command and initiates the search.
 fn parse_go(board: &mut Board, tokens: &[&str]) {
-    let mut depth = 5; 
+    let mut depth = 7; 
 
     for i in 0..tokens.len() {
         if tokens[i] == "depth" && i + 1 < tokens.len() {

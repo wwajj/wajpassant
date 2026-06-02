@@ -51,7 +51,7 @@ pub fn cli_loop() {
         } else {
             // --- ENGINE TURN ---
             
-            if let Some(best_move) = search_best_move(&mut board, 5) {
+            if let Some(best_move) = search_best_move(&mut board, 7) {
                 println!("WajPassant plays: {}", format_move(best_move)); 
                 board.make_move(best_move);
             } else {

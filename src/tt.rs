@@ -31,6 +31,7 @@ impl Default for TTEntry {
 
 pub struct TranspositionTable {
     pub entries: Vec<TTEntry>,
+    pub killers: [[Option<Move>; 2]; 64],
 }
 
 impl TranspositionTable {
@@ -41,6 +42,7 @@ impl TranspositionTable {
 
         Self {
             entries: vec![TTEntry::default(); num_entries],
+            killers: [[None; 2]; 64],
         }
     }
 
@@ -87,5 +89,39 @@ impl TranspositionTable {
     /// Clears all the entries
     pub fn clear(&mut self) {
         self.entries.fill(TTEntry::default());
+    }
+
+    /// Writes a killer move
+    pub fn write_killer(&mut self, mv: Move, ply: i32) {
+        if mv.is_capture() || mv.is_promotion() {
+            return;
+        }
+
+        let p = (ply as usize).min(63);
+
+        if self.killers[p][0] != Some(mv) {
+            self.killers[p][1] = self.killers[p][0];
+            self.killers[p][0] = Some(mv);
+        }
+    }
+
+    /// Reads a killer move
+    pub fn read_killer(&self, mv: Move, ply: i32) -> i32 {
+        let p = (ply as usize).min(63);
+
+        if !mv.is_capture() && !mv.is_promotion() {
+            if self.killers[p][0] == Some(mv) {
+                return 90000;
+            } else if self.killers[p][1] == Some(mv) {
+                return 80000;
+            }
+        }
+
+        0
+    }
+
+    /// Clears all killer moves
+    pub fn clear_killers(&mut self) {
+        self.killers = [[None; 2]; 64]
     }
 }

@@ -3,11 +3,13 @@ use std::fs::File;
 use wajpassant::attacks::init_attacks;
 use wajpassant::board::Board; 
 use wajpassant::cli::cli_loop;
+use wajpassant::search::init_lmr_table;
 use wajpassant::uci::uci_loop;
 use wajpassant::zobrist::init_zobrist;
 
 fn main() {
     init_attacks();
+    init_lmr_table();
     init_zobrist();
 
     let args: Vec<String> = env::args().collect();

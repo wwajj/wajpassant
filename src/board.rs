@@ -619,14 +619,14 @@ impl Board {
         self.side_to_move = self.side_to_move.flip();
         self.update_occupancies();
 
+        let new_hash = self.calculate_hash();
+        self.hash_history.push(new_hash);
+
         let king_sq = self.pieces[us as usize][PieceType::King as usize].get_lsb();
         if self.is_square_attacked(king_sq, them) { 
             self.unmake_move(mv);
             return false;
         };
-
-        let new_hash = self.calculate_hash();
-        self.hash_history.push(new_hash);
 
         true
     }
@@ -1227,5 +1227,46 @@ impl Board {
         }
 
         false
+    }
+
+    /// Makes a null move, changing the side to move and updating the Zorbist
+    /// hash without touching the piece bitboards
+    pub fn make_null_move(&mut self) {
+        let history = UndoRecord::new(
+            self.en_passant,
+            self.castling_rights,
+            self.halfmove_clock,
+            None,
+            self.mg_score,
+            self.eg_score,
+            self.phase,
+        );
+        self.history.push(history);
+
+        let mut new_hash = *self.hash_history.last().unwrap();
+        if let Some(ep_sq) = self.en_passant {
+            new_hash ^= ZOBRIST_EN_PASSANT.get().unwrap()[(ep_sq as usize) % 8];
+        }
+        new_hash ^= ZOBRIST_SIDE.get().unwrap();
+        self.hash_history.push(new_hash);
+
+        self.side_to_move = self.side_to_move.flip();
+        self.en_passant = None;
+        self.halfmove_clock += 1;
+    }
+
+    /// Unmakes a null move, rewinding the board state to how it was before
+    /// the null move was made
+    pub fn unmake_null_move(&mut self) {
+        self.hash_history.pop();
+        let history = self.history.pop().unwrap();
+
+        self.side_to_move = self.side_to_move.flip();
+        self.en_passant = history.en_passant;
+        self.castling_rights = history.castling_rights;
+        self.halfmove_clock = history.halfmove_clock;
+        self.mg_score = history.mg_score;
+        self.eg_score = history.eg_score;
+        self.phase = history.phase;
     }
 }

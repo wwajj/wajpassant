@@ -3,6 +3,7 @@ pub mod bitboard;
 pub mod board;
 pub mod cli;
 pub mod eval;
+pub mod hh;
 pub mod magics;
 pub mod movegen;
 pub mod movelist;
