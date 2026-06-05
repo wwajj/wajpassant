@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use crate::attacks::{KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
+use crate::attacks::{WHITE_PAWN_ATTACKS, BLACK_PAWN_ATTACKS, KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
 use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE};
 use crate::moves::*;
@@ -1268,5 +1268,67 @@ impl Board {
         self.mg_score = history.mg_score;
         self.eg_score = history.eg_score;
         self.phase = history.phase;
+    }
+
+
+    /// Finds the absolute weakest piece of a given color that is currently
+    /// attacking a square
+    pub fn get_smallest_attacker(&self, target: Square, us: Color,
+        sim_occupancy: Bitboard) -> Option<(PieceType, Square)> {
+
+        if us == Color::White {
+            let mut attack_bb:Bitboard = unsafe {
+                self.pieces[us as usize][PieceType::Pawn as usize] & BLACK_PAWN_ATTACKS[target as usize]
+            };
+            attack_bb &= sim_occupancy;
+            if attack_bb.0 != 0 {
+                return Some((PieceType::Pawn, attack_bb.get_lsb()));
+            }
+ 
+        } else {
+            let mut attack_bb = unsafe {
+                self.pieces[us as usize][PieceType::Pawn as usize] & WHITE_PAWN_ATTACKS[target as usize]
+            };
+            attack_bb &= sim_occupancy;
+            if attack_bb.0 != 0 {
+                return Some((PieceType::Pawn, attack_bb.get_lsb()));
+            }
+        }
+
+        let mut attack_bb = unsafe {
+            KNIGHT_ATTACKS[target as usize] & self.pieces[us as usize][PieceType::Knight as usize]
+        };
+        attack_bb &= sim_occupancy;
+        if attack_bb.0 != 0 {
+            return Some((PieceType::Knight, attack_bb.get_lsb()));
+        }
+
+        let bishop_attacks = get_bishop_attacks(target, sim_occupancy);
+        let attack_bb = bishop_attacks & self.pieces[us as usize][PieceType::Bishop as usize] & sim_occupancy;
+        if attack_bb.0 != 0 {
+            return Some((PieceType::Bishop, attack_bb.get_lsb()));
+        }
+
+        let rook_attacks = get_rook_attacks(target, sim_occupancy);
+        let attack_bb = rook_attacks & self.pieces[us as usize][PieceType::Rook as usize] & sim_occupancy;
+        if attack_bb.0 != 0 {
+            return Some((PieceType::Rook, attack_bb.get_lsb()));
+        }
+
+        let mut attack_bb = bishop_attacks | rook_attacks;
+        attack_bb &= self.pieces[us as usize][PieceType::Queen as usize] & sim_occupancy;
+        if attack_bb.0 != 0 {
+            return Some((PieceType::Queen, attack_bb.get_lsb()));
+        }
+
+        let mut attack_bb = unsafe {
+            KING_ATTACKS[target as usize]
+        };
+        attack_bb &= self.pieces[us as usize][PieceType::King as usize] & sim_occupancy;
+        if attack_bb.0 != 0 {
+            return Some((PieceType::King, attack_bb.get_lsb()));
+        }
+
+        None
     }
 }

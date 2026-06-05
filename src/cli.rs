@@ -1,6 +1,9 @@
 //! Command Line Interface for playing against the engine directly in the terminal.
 
 use std::io::{self, Write};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use crate::board::{Board, Color, PieceType};
 use crate::search::search_best_move;
 use crate::moves::Move;
@@ -25,11 +28,9 @@ pub fn cli_loop() {
     };
 
     loop {
-        // Print the board from the user's perspective
         print_board_cli(&board, user_color); 
 
         if board.side_to_move == user_color {
-            // --- HUMAN TURN ---
             print!("Enter your move (e.g., e2e4): ");
             io::stdout().flush().unwrap();
             
@@ -49,11 +50,11 @@ pub fn cli_loop() {
                 println!("Invalid move format or illegal move. Try again.");
             }
         } else {
-            // --- ENGINE TURN ---
+            let abort_flag = Arc::new(AtomicBool::new(false));
             
-            if let Some(best_move) = search_best_move(&mut board, 7) {
+            if let Some(best_move) = search_best_move(board.clone(), 7, abort_flag, None) {
                 println!("WajPassant plays: {}", format_move(best_move)); 
-                board.make_move(best_move);
+                board.make_move(best_move); // Actually update the CLI board state
             } else {
                 println!("Game Over! WajPassant has no legal moves.");
                 break;

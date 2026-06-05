@@ -1,18 +1,25 @@
 //! The Universal Chess Interface (UCI) Protocol Listener.
 //!
-//! This module allows the engine to communicate with standard chess GUIs 
-//! by listening to stdin and responding via stdout.
+//! This module allows the engine to communicate with standard chess GUIs.
+//! It utilizes multithreading and atomic variables to ensure the engine can 
+//! listen for "stop" commands and manage time controls without freezing.
 
 use std::io::{self, BufRead};
-use crate::board::{Board, PieceType};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::thread;
+use std::time::Duration;
+
+use crate::board::{Board, PieceType, Color};
 use crate::search::search_best_move;
 use crate::moves::Move;
 
-/// The main infinite loop that listens for GUI commands.
 pub fn uci_loop() {
     let stdin = io::stdin();
     let mut board = Board::default();
     board.init_eval();
+
+    let mut abort_flag = Arc::new(AtomicBool::new(false));
+    let mut search_thread: Option<thread::JoinHandle<()>> = None;
 
     for line in stdin.lock().lines() {
         let input = line.unwrap_or_default();
@@ -26,7 +33,7 @@ pub fn uci_loop() {
 
         match tokens[0] {
             "uci" => {
-                println!("id name WajPassant 1.0");
+                println!("id name WajPassant 2.0");
                 println!("id author Rohan Bharadwaj");
                 println!("uciok");
             }
@@ -41,13 +48,28 @@ pub fn uci_loop() {
                 parse_position(&mut board, &tokens);
             }
             "go" => {
-                parse_go(&mut board, &tokens);
+                abort_flag.store(true, Ordering::Relaxed);
+                if let Some(handle) = search_thread.take() {
+                    let _ = handle.join();
+                }
+
+                abort_flag = Arc::new(AtomicBool::new(false));
+                search_thread = Some(parse_go(&board, &tokens, Arc::clone(&abort_flag)));
+            }
+            "stop" => {
+                abort_flag.store(true, Ordering::Relaxed);
+                if let Some(handle) = search_thread.take() {
+                    let _ = handle.join();
+                }
             }
             "quit" => {
+                abort_flag.store(true, Ordering::Relaxed);
+                if let Some(handle) = search_thread.take() {
+                    let _ = handle.join();
+                }
                 break;
             }
-            _ => {
-            }
+            _ => {}
         }
     }
 }
@@ -84,28 +106,54 @@ fn parse_position(board: &mut Board, tokens: &[&str]) {
     }
 }
 
-/// Parses the "go" command and initiates the search.
-fn parse_go(board: &mut Board, tokens: &[&str]) {
-    let mut depth = 7; 
+/// Parses the "go" command, calculates time, and spawns the search thread.
+fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thread::JoinHandle<()> {
+    let mut depth: u8 = 64;
+    let mut wtime: u64 = 0;
+    let mut btime: u64 = 0;
+    let mut winc: u64 = 0;
+    let mut binc: u64 = 0;
+    let mut movestogo: u64 = 40;
 
-    for i in 0..tokens.len() {
-        if tokens[i] == "depth" && i + 1 < tokens.len() {
-            if let Ok(d) = tokens[i + 1].parse::<u8>() {
-                depth = d;
-            }
+    let mut i = 1;
+    while i < tokens.len() {
+        match tokens[i] {
+            "depth" => { depth = tokens[i + 1].parse().unwrap_or(64); i += 1; }
+            "wtime" => { wtime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
+            "btime" => { btime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
+            "winc"  => { winc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
+            "binc"  => { binc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
+            "movestogo" => { movestogo = tokens[i + 1].parse().unwrap_or(40); i += 1; }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let mut allocated_time: Option<Duration> = None;
+    
+    if !tokens.contains(&"depth") {
+        let our_time = if board.side_to_move == Color::White { wtime } else { btime };
+        let our_inc = if board.side_to_move == Color::White { winc } else { binc };
+        
+        if our_time > 0 {
+            let time_for_move = (our_time / (movestogo + 5)) + (our_inc / 2);
+            allocated_time = Some(Duration::from_millis(time_for_move));
         }
     }
 
-    if let Some(best_move) = search_best_move(board, depth) {
-        println!("bestmove {}", format_uci_move(best_move));
-    } else {
-        println!("bestmove 0000"); 
-    }
+    let search_board = board.clone();
+
+    thread::spawn(move || {
+        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time) {
+            println!("bestmove {}", format_uci_move(mv));
+        } else {
+            println!("bestmove 0000");
+        }
+    })
 }
 
 // --- Helper Functions ---
 
-/// Converts a UCI string (e.g., "e2e4", "e7e8q") to our internal Move struct.
 fn parse_uci_move(board: &mut Board, move_str: &str) -> Option<Move> {
     let clean_str = move_str.trim().to_lowercase();
     if clean_str.len() < 4 { return None; }
@@ -144,8 +192,8 @@ fn parse_uci_move(board: &mut Board, move_str: &str) -> Option<Move> {
     None
 }
 
-/// Converts our internal Move struct back into a UCI string for the GUI.
-fn format_uci_move(mv: Move) -> String {
+/// Kept public just in case, but formatting is now mostly handled inside search.rs
+pub fn format_uci_move(mv: Move) -> String {
     let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
