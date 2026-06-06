@@ -199,6 +199,7 @@ fn negamax(
         if (depth <= 2) && (!in_check) && (!gives_check) && (!mv.is_capture())
             && (!mv.is_promotion()) && (eval.abs() < MATE_VALUE - 100)
             && futility_zone {
+                board.unmake_move(mv);
                 continue;
         }
 
@@ -299,6 +300,7 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut Tran
 
     let mut tt_flag = TTFlag::Alpha;
     let mut best_score = alpha;
+    let mut best_q_move: Option<Move> = None;
 
     for mv in captures {
         if (static_exchange_evaluation(board, mv) < 0) && (!mv.is_promotion()) { continue; }
@@ -311,6 +313,7 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut Tran
         board.unmake_move(mv);
 
         if score >= beta {
+            tt.write(hash, QSEARCH_DEPTH, beta, Some(mv), TTFlag::Beta);
             return beta;
         }
         
@@ -318,10 +321,11 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut Tran
             alpha = score;
             best_score = score;
             tt_flag = TTFlag::Exact;
+            best_q_move = Some(mv);
         }
     }
 
-    tt.write(hash, QSEARCH_DEPTH, best_score, None, tt_flag);
+    tt.write(hash, QSEARCH_DEPTH, best_score, best_q_move, tt_flag);
     alpha
 }
 
