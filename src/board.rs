@@ -1016,8 +1016,17 @@ impl Board {
     /// Returns the tapered evaluation of the current position in centipawns.
     pub fn evaluate(&self, alpha: i32, beta: i32) -> i32 {
         let p = self.phase.min(MAX_PHASE);
+
+        let mut bonus = 0;
+        if self.has_castled(Color::White) { bonus += 50; }
+        if self.has_castled(Color::Black) { bonus -= 50; }
+
+        if self.phase > 15 {
+            if !self.can_castle(Color::White) { bonus -= 30; }
+            if !self.can_castle(Color::Black) { bonus += 30; }
+        }
         
-        let mut score = (self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE;
+        let mut score = ((self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE) + bonus;
         let perspective_base = if self.side_to_move == Color::White { score } else { -score };
 
         let margin = 150;
@@ -1437,5 +1446,26 @@ pub fn get_piece_moves_bb(&self, side: Color, piece: PieceType) -> Bitboard {
     }
 
     moves
+    }
+
+    /// Returns true if the King has moved to a castled position
+    pub fn has_castled(&self, us: Color) -> bool {
+        let king_bb = self.pieces[us as usize][PieceType::King as usize];
+        if us == Color::White {
+            let castled_pos = (1u64 << 6) | (1u64 << 2);
+            (king_bb.0 & castled_pos != 0) & (self.castling_rights & 0b0011 == 0)
+        } else {
+            let castled_pos = (1u64 << 62) | (1u64 << 58);
+            (king_bb.0 & castled_pos != 0) & (self.castling_rights & 0b1100 == 0)
+        }
+    }
+
+    /// Retruns true if the player still retains at least one castling right
+    pub fn can_castle(&self, us: Color) -> bool {
+        if us == Color::White {
+            (self.castling_rights & 0b0011) != 0
+        } else {
+            (self.castling_rights & 0b1100) != 0
+        }
     }
 }

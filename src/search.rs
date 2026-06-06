@@ -20,6 +20,9 @@ pub static LMR_TABLE: OnceLock<[[u8; 64]; 64]> = OnceLock::new();
 pub const INFINITY: i32 = 50000;
 pub const MATE_VALUE: i32 = 49000;
 
+const QSEARCH_DEPTH: u8 = 0;
+const MAX_EXTENSION_DEPTH: u8 = 8;
+
 // Reduction factor for Null Move Pruning
 const NMP_R: u8 = 2;
 
@@ -132,7 +135,7 @@ fn negamax(
     }
 
     if depth == 0 {
-        return quiescence_search(board, alpha, beta);
+        return quiescence_search(board, alpha, beta, tt);
     }
 
     let hash = board.hash_history.last().copied().unwrap_or(0);
@@ -151,9 +154,10 @@ fn negamax(
     let king_bb = board.pieces[us as usize][PieceType::King as usize];
     let king_sq = king_bb.get_lsb();
     let in_check = board.is_square_attacked(king_sq, them);
+    let eval = board.evaluate(alpha, beta);
 
     if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1) {
-        if board.evaluate(alpha, beta) >= beta {
+        if eval >= beta {
             board.make_null_move();
             let nm_score = -negamax(
                 board, depth - 1 - NMP_R, -beta, -beta + 1, ply + 1, 
@@ -174,6 +178,7 @@ fn negamax(
     let mut legal_moves = 0;
     let mut best_move: Option<Move> = None;
     let mut tt_flag = TTFlag::Alpha;
+    let futility_margin = 150 + (depth as i32 * 100);
 
     for mv in moves {
         if !board.make_move(mv) {
@@ -181,11 +186,21 @@ fn negamax(
         }
         legal_moves += 1;
 
+
         let mut score;
         let gives_check = board.is_square_attacked(
             board.pieces[them as usize][PieceType::King as usize].get_lsb(),
             us
         );
+        let extension = if gives_check && ply < MAX_EXTENSION_DEPTH as i32 { 1 } else { 0 };
+
+        let futility_zone = (eval + futility_margin) < alpha;
+
+        if (depth <= 2) && (!in_check) && (!gives_check) && (!mv.is_capture())
+            && (!mv.is_promotion()) && (eval.abs() < MATE_VALUE - 100)
+            && futility_zone {
+                continue;
+        }
 
         if (!mv.is_capture()) && (!mv.is_promotion()) && (!in_check) && (!gives_check)
             && (board.piece_at(mv.get_target()).unwrap_or(PieceType::Pawn) != PieceType::King) 
@@ -205,9 +220,10 @@ fn negamax(
                     tt, hh, abort_flag, start_time, time_limit, nodes
                 );
             }
-        } else {
+        } 
+        else {
             score = -negamax(
-                board, depth - 1, -beta, -alpha, ply + 1, 
+                board, depth - 1 + extension, -beta, -alpha, ply + 1, 
                 tt, hh, abort_flag, start_time, time_limit, nodes
             );
         }
@@ -248,7 +264,19 @@ fn negamax(
 
 /// Loops through all captures to calculate tactical positions at the end of
 /// a negamax search
-fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32) -> i32 {
+fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32, tt: &mut TranspositionTable) -> i32 {
+    let hash = board.hash_history.last().copied().unwrap_or(0);
+    let mut tt_move = None;
+    if let Some(entry) = tt.read(hash, QSEARCH_DEPTH) {
+        tt_move = entry.best_move;
+        match entry.flag {
+            TTFlag::Exact => return entry.score,
+            TTFlag::Alpha if entry.score <= alpha => return alpha,
+            TTFlag::Beta if entry.score >= beta => return beta,
+            _ => {}
+        }
+    }
+
     let stand_pat = board.evaluate(alpha, beta);
     
     if stand_pat >= beta {
@@ -259,7 +287,18 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32) -> i32 {
     }
 
     let mut captures = board.generate_captures();
-    captures.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move(board, mv)));
+    captures.sort_unstable_by_key(|&mv| {
+        let mut score = score_move(board, mv);
+
+        if Some(mv) == tt_move {
+            score += 1_000_000;
+        }
+
+        std::cmp::Reverse(score)
+    });
+
+    let mut tt_flag = TTFlag::Alpha;
+    let mut best_score = alpha;
 
     for mv in captures {
         if (static_exchange_evaluation(board, mv) < 0) && (!mv.is_promotion()) { continue; }
@@ -268,7 +307,7 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32) -> i32 {
             continue; 
         }
 
-        let score = -quiescence_search(board, -beta, -alpha);
+        let score = -quiescence_search(board, -beta, -alpha, tt);
         board.unmake_move(mv);
 
         if score >= beta {
@@ -277,9 +316,12 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32) -> i32 {
         
         if score > alpha {
             alpha = score;
+            best_score = score;
+            tt_flag = TTFlag::Exact;
         }
     }
 
+    tt.write(hash, QSEARCH_DEPTH, best_score, None, tt_flag);
     alpha
 }
 
