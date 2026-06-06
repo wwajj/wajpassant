@@ -8,8 +8,9 @@ use std::io::Write;
 
 use crate::attacks::{WHITE_PAWN_ATTACKS, BLACK_PAWN_ATTACKS, KNIGHT_ATTACKS, KING_ATTACKS, get_bishop_attacks, get_rook_attacks};
 use crate::bitboard::{Bitboard, Square, SQUARES, NOT_H_FILE, NOT_A_FILE};
-use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE};
+use crate::eval::{PST_MG, PST_EG, MATERIAL_MG, MATERIAL_EG, PHASE_WEIGHTS, MAX_PHASE, MOBILITY_WEIGHTS_MG, MOBILITY_WEIGHTS_EG};
 use crate::moves::*;
+use crate::movegen::{THIRD_RANK, SIXTH_RANK};
 use crate::zobrist::{ZOBRIST_PIECES, ZOBRIST_SIDE, ZOBRIST_CASTLING, ZOBRIST_EN_PASSANT};
 
 /// Starting position bitboard masks for White pieces.
@@ -1008,16 +1009,48 @@ impl Board {
                 }
             }
         }
-        
+
         if self.phase > MAX_PHASE { self.phase = MAX_PHASE; }
     }
 
     /// Returns the tapered evaluation of the current position in centipawns.
-    pub fn evaluate(&self) -> i32 {
+    pub fn evaluate(&self, alpha: i32, beta: i32) -> i32 {
         let p = self.phase.min(MAX_PHASE);
         
-        let score = (self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE;
+        let mut score = (self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE;
+        let perspective_base = if self.side_to_move == Color::White { score } else { -score };
+
+        let margin = 150;
         
+        if perspective_base + margin <= alpha {
+            return perspective_base;
+        }
+        if perspective_base - margin >= beta {
+            return perspective_base;
+        }
+
+        let mut white_mobility_mg = 0;
+        let mut white_mobility_eg = 0;
+        let mut black_mobility_mg = 0;
+        let mut black_mobility_eg = 0;
+
+        for pt in 1..6 {
+            let piece = PieceType::from_index(pt).unwrap();
+
+            let w_count = self.get_piece_moves_bb(Color::White, piece).count() as i32;
+            let b_count = self.get_piece_moves_bb(Color::Black, piece).count() as i32;
+
+            white_mobility_mg += w_count * MOBILITY_WEIGHTS_MG[pt];
+            white_mobility_eg += w_count * MOBILITY_WEIGHTS_EG[pt];
+            
+            black_mobility_mg += b_count * MOBILITY_WEIGHTS_MG[pt];
+            black_mobility_eg += b_count * MOBILITY_WEIGHTS_EG[pt];
+        }
+        let w_mob_tapered = (white_mobility_mg * p + white_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
+        let b_mob_tapered = (black_mobility_mg * p + black_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
+
+        score += w_mob_tapered - b_mob_tapered;
+
         if self.side_to_move == Color::White {
             score
         } else {
@@ -1330,5 +1363,79 @@ impl Board {
         }
 
         None
+    }
+
+pub fn get_piece_moves_bb(&self, side: Color, piece: PieceType) -> Bitboard {
+    let mut moves = Bitboard::empty();
+    let friendly_occupancy = if side == Color::White { self.occupancies[0] } else { self.occupancies[1] };
+    let total_occupancy = self.occupancies[2];
+    let mut piece_bb = self.pieces[side as usize][piece as usize];
+
+    match piece {
+        PieceType::Pawn => {
+            if side == Color::White {
+                while piece_bb.0 != 0 {
+                    let sq = piece_bb.pop_lsb();
+                    let sq_bb = Bitboard::from_square(sq);
+                    let attacks = unsafe {
+                        WHITE_PAWN_ATTACKS[sq as usize] & !friendly_occupancy
+                    };
+                    let single_pushes = (sq_bb << 8) & !total_occupancy;
+                    let double_pushes = ((single_pushes & Bitboard(THIRD_RANK)) << 8) & !total_occupancy;
+
+                    moves |= attacks | single_pushes | double_pushes
+                }
+            } else {
+                while piece_bb.0 != 0 {
+                    let sq = piece_bb.pop_lsb();
+                    let sq_bb = Bitboard::from_square(sq);
+                    let attacks = unsafe {
+                    BLACK_PAWN_ATTACKS[sq as usize] & !friendly_occupancy
+                    };
+
+                    let single_pushes = (sq_bb >> 8) & !total_occupancy;
+                    let double_pushes = ((single_pushes & Bitboard(SIXTH_RANK)) >> 8) & !total_occupancy;
+
+                    moves |= attacks | single_pushes | double_pushes
+                }
+            }
+        },
+        PieceType::Knight => {
+            while piece_bb.0 != 0 {
+                let sq = piece_bb.pop_lsb();
+                moves |= unsafe {
+                    KNIGHT_ATTACKS[sq as usize] & !friendly_occupancy
+                };
+            }
+        },
+        PieceType::Bishop => {
+            while piece_bb.0 != 0 {
+                let sq = piece_bb.pop_lsb();
+                moves |= get_bishop_attacks(sq, total_occupancy) & !friendly_occupancy;
+            }
+        },
+        PieceType::Rook => {
+            while piece_bb.0 != 0 {
+                let sq = piece_bb.pop_lsb();
+                moves |= get_rook_attacks(sq, total_occupancy) & !friendly_occupancy;
+            }
+        },
+        PieceType::Queen => {
+            while piece_bb.0 != 0 {
+                let sq = piece_bb.pop_lsb();
+                moves |= (get_bishop_attacks(sq, total_occupancy) | get_rook_attacks(sq, total_occupancy)) & !friendly_occupancy;
+            }
+        },
+        PieceType::King => {
+            while piece_bb.0 != 0 {
+                let sq = piece_bb.pop_lsb();
+                moves |= unsafe {
+                    KING_ATTACKS[sq as usize] & !friendly_occupancy
+                }
+            }
+        },
+    }
+
+    moves
     }
 }

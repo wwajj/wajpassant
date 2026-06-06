@@ -33,7 +33,7 @@ pub fn uci_loop() {
 
         match tokens[0] {
             "uci" => {
-                println!("id name WajPassant 2.0");
+                println!("id name WajPassant");
                 println!("id author Rohan Bharadwaj");
                 println!("uciok");
             }
@@ -114,6 +114,7 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
     let mut winc: u64 = 0;
     let mut binc: u64 = 0;
     let mut movestogo: u64 = 40;
+    let mut movetime: u64 = 0;
 
     let mut i = 1;
     while i < tokens.len() {
@@ -124,6 +125,7 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
             "winc"  => { winc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
             "binc"  => { binc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
             "movestogo" => { movestogo = tokens[i + 1].parse().unwrap_or(40); i += 1; }
+            "movetime" => { movetime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
             _ => {}
         }
         i += 1;
@@ -131,7 +133,9 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
 
     let mut allocated_time: Option<Duration> = None;
     
-    if !tokens.contains(&"depth") {
+    if movetime > 0 {
+        allocated_time = Some(Duration::from_millis(movetime));
+    } else if !tokens.contains(&"depth") {
         let our_time = if board.side_to_move == Color::White { wtime } else { btime };
         let our_inc = if board.side_to_move == Color::White { winc } else { binc };
         

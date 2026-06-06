@@ -80,6 +80,28 @@ pub fn search_best_move(
         }
         
         best_move_so_far = best_move;
+
+        let elapsed = start_time.elapsed().as_millis();
+        let nps = if elapsed > 0 {
+            (nodes * 1000) / elapsed as u64
+        } else {
+            nodes
+        };
+
+        if best_score.abs() > MATE_VALUE {
+            let mate_in_plies = INFINITY - best_score.abs();
+            let mate_in_moves = (mate_in_plies + 1) / 2;
+            let sign = if best_score > 0 { 1 } else { -1 };
+            println!(
+                "info depth {} score mate {} nodes {} nps {} time {}",
+                current_depth, mate_in_moves * sign, nodes, nps, elapsed
+            );
+        } else {
+            println!(
+                "info depth {} score cp {} nodes {} nps {} time {}",
+                current_depth, best_score, nodes, nps, elapsed
+            );
+        }
     }
 
     best_move_so_far
@@ -131,7 +153,7 @@ fn negamax(
     let in_check = board.is_square_attacked(king_sq, them);
 
     if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1) {
-        if board.evaluate() >= beta {
+        if board.evaluate(alpha, beta) >= beta {
             board.make_null_move();
             let nm_score = -negamax(
                 board, depth - 1 - NMP_R, -beta, -beta + 1, ply + 1, 
@@ -227,7 +249,7 @@ fn negamax(
 /// Loops through all captures to calculate tactical positions at the end of
 /// a negamax search
 fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32) -> i32 {
-    let stand_pat = board.evaluate();
+    let stand_pat = board.evaluate(alpha, beta);
     
     if stand_pat >= beta {
         return beta;
@@ -355,7 +377,7 @@ pub fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
     }
 
     for d in (1..depth).rev() {
-        gain[d - 1] = -(-gain[d - 1]).max(gain[d]);
+        gain[d - 1] = gain[d - 1].min(-gain[d]);
     }
 
     return gain[0]
