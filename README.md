@@ -40,7 +40,7 @@ WajPassant is structured as a multi-binary Cargo workspace:
 Ensure you have the latest stable version of [Rust and Cargo](https://rustup.rs/) installed.
 
 ```bash
-git clone [https://github.com/yourusername/wajpassant.git](https://github.com/yourusername/wajpassant.git)
+git clone [https://github.com/wwajj/wajpassant.git](https://github.com/wwajj/wajpassant.git)
 cd wajpassant
 cargo build --release
 ```
