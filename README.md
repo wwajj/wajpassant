@@ -54,11 +54,3 @@ Alternatively, to play against the engine using the CLI:
 ```bash
 cargo run --release --cli
 ```
-
-### Running the Texel Tuner
-1. Ensure you have a valid dataset file located at `src/bin/dataset.txt` (Format: `FEN | Result`)
-2. Run the tuner binary:
-```bash
-cargo run --release --bin tuner
-```
-3. Once convergence is reached, the tuner will automatically generate `src/bin/pst.txt` containing fomratted Rust arrays.
