@@ -1,4 +1,4 @@
-# WajPassant ♟️
+# WajPassant
 
 A high-performance, UCI-compatible chess engine written in Rust. WajPassant features a highly optimized bitboard board representation and a custom-built, parallelized Texel Tuner that uses supervised machine learning to independently derive advanced positional chess intuition.
 
