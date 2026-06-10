@@ -4,7 +4,7 @@ A high-performance, UCI-compatible chess engine written in Rust. WajPassant feat
 
 **Current Strength:** ~2150 Elo *(Calibrated via `cutechess-cli` against handicapped Stockfish-2000)*
 ```bash
- --------------------------------------------------
+--------------------------------------------------
 Results of WajPassant vs Stockfish-2000 (10+0.1, NULL - 1t, NULL - 16MB, UHO_openings.epd):
 Elo: 149.26 +/- 55.24, nElo: 148.57 +/- 48.15
 LOS: 100.00 %, DrawRatio: 32.00 %, PairsRatio: 4.67
