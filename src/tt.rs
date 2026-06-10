@@ -47,7 +47,14 @@ impl TranspositionTable {
     }
 
     /// Saves a position to the Transposition Table
-    pub fn write(&mut self, zobrist: u64, depth: u8, score: i32, best_move: Option<Move>, flag: TTFlag) {
+    pub fn write(
+        &mut self,
+        zobrist: u64,
+        depth: u8,
+        score: i32,
+        best_move: Option<Move>,
+        flag: TTFlag,
+    ) {
         let index = (zobrist % self.entries.len() as u64) as usize;
 
         if depth >= self.entries[index].depth {
@@ -68,7 +75,9 @@ impl TranspositionTable {
         let entry = self.entries[index];
 
         if entry.zobrist == zobrist {
-            if entry.depth >= depth { return Some(entry) };
+            if entry.depth >= depth {
+                return Some(entry);
+            };
         }
 
         None

@@ -6,12 +6,12 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use crate::board::{Board, PieceType};
 use crate::eval::EvalParams;
 use crate::hh::HistoryHierarchy;
-use crate::moves::{Move, FLAG_EN_PASSANT, FLAG_CAPTURE};
+use crate::moves::{FLAG_CAPTURE, FLAG_EN_PASSANT, Move};
 use crate::tt::{TTFlag, TranspositionTable};
 
 /// A global, safety initialized 64x64 array to hold LMR reduction values
@@ -30,63 +30,104 @@ const NMP_R: u8 = 2;
 /// Piece values for MVV_LVA lookup
 const MVV_LVA_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10000];
 
-/// Initiates the Negamax recursion and manages the time/abort lifecycle.
 pub fn search_best_move(
-    mut board: Board, 
-    depth: u8, 
-    abort_flag: Arc<AtomicBool>, 
+    mut board: Board,
+    depth: u8,
+    abort_flag: Arc<AtomicBool>,
     time_limit: Option<Duration>,
-    quiet: bool
+    quiet: bool,
 ) -> Option<Move> {
     let mut best_move_so_far: Option<Move> = None;
+    let mut best_score_so_far: i32 = 0; // Track score across iterative deepening depths
     let mut tt = TranspositionTable::new(32);
     let mut hh = HistoryHierarchy::new();
     let params = EvalParams::new();
-    
+
     let start_time = Instant::now();
     let mut nodes: u64 = 0;
 
     for current_depth in 1..=depth {
         let mut moves = board.generate_all_moves();
-        moves.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move_iterative(&board, mv, best_move_so_far, &tt, &hh, current_depth as i32)));
+        moves.sort_unstable_by_key(|&mv| {
+            std::cmp::Reverse(score_move_iterative(
+                &board,
+                mv,
+                best_move_so_far,
+                &tt,
+                &hh,
+                current_depth as i32,
+            ))
+        });
 
-        let mut best_move: Option<Move> = None;
-        let mut best_score = -INFINITY;
-        
+        let mut delta = 30;
         let mut alpha = -INFINITY;
-        let beta = INFINITY;
+        let mut beta = INFINITY;
 
-        for mv in moves {
-            if !board.make_move(mv, &params) {
-                continue;
+        if current_depth >= 4 && best_score_so_far.abs() < MATE_VALUE - 100 {
+            alpha = best_score_so_far - delta;
+            beta = best_score_so_far + delta;
+        }
+
+        loop {
+            let mut best_move: Option<Move> = None;
+            let mut best_score = -INFINITY;
+            let mut current_alpha = alpha;
+
+            for mv in &moves {
+                if !board.make_move(*mv, &params) {
+                    continue;
+                }
+
+                let score = -negamax(
+                    &mut board,
+                    current_depth - 1,
+                    -beta,
+                    -current_alpha,
+                    1,
+                    &mut tt,
+                    &mut hh,
+                    &abort_flag,
+                    start_time,
+                    time_limit,
+                    &mut nodes,
+                    &params,
+                );
+                board.unmake_move(*mv);
+
+                if abort_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if score > best_score {
+                    best_score = score;
+                    best_move = Some(*mv);
+                }
+
+                if score > current_alpha {
+                    current_alpha = score;
+                }
             }
-
-            let score = -negamax(
-                &mut board, current_depth - 1, -beta, -alpha, 1, 
-                &mut tt, &mut hh, &abort_flag, start_time, time_limit,
-                &mut nodes, &params
-            );
-            board.unmake_move(mv);
 
             if abort_flag.load(Ordering::Relaxed) {
                 break;
             }
 
-            if score > best_score {
-                best_score = score;
-                best_move = Some(mv);
-            }
-
-            if score > alpha {
-                alpha = score;
+            if best_score <= alpha {
+                alpha -= delta;
+                delta += delta / 2;
+            } else if best_score >= beta {
+                beta += delta;
+                delta += delta / 2;
+            } else {
+                best_score_so_far = best_score;
+                best_move_so_far = best_move;
+                break;
             }
         }
 
         if abort_flag.load(Ordering::Relaxed) {
             break;
         }
-        
-        best_move_so_far = best_move;
 
         let elapsed = start_time.elapsed().as_millis();
         let nps = if elapsed > 0 {
@@ -96,18 +137,22 @@ pub fn search_best_move(
         };
 
         if !quiet {
-            if best_score.abs() > MATE_VALUE {
-                let mate_in_plies = INFINITY - best_score.abs();
+            if best_score_so_far.abs() > MATE_VALUE {
+                let mate_in_plies = INFINITY - best_score_so_far.abs();
                 let mate_in_moves = (mate_in_plies + 1) / 2;
-                let sign = if best_score > 0 { 1 } else { -1 };
+                let sign = if best_score_so_far > 0 { 1 } else { -1 };
                 println!(
                     "info depth {} score mate {} nodes {} nps {} time {}",
-                    current_depth, mate_in_moves * sign, nodes, nps, elapsed
+                    current_depth,
+                    mate_in_moves * sign,
+                    nodes,
+                    nps,
+                    elapsed
                 );
             } else {
                 println!(
                     "info depth {} score cp {} nodes {} nps {} time {}",
-                    current_depth, best_score, nodes, nps, elapsed
+                    current_depth, best_score_so_far, nodes, nps, elapsed
                 );
             }
         }
@@ -116,18 +161,25 @@ pub fn search_best_move(
     best_move_so_far
 }
 
-/// The recursive search function. 
+/// The recursive search function.
 fn negamax(
-    board: &mut Board, depth: u8, mut alpha: i32, beta: i32, ply: i32, 
-    tt: &mut TranspositionTable, hh: &mut HistoryHierarchy,
-    abort_flag: &Arc<AtomicBool>, start_time: Instant, time_limit: Option<Duration>,
-    nodes: &mut u64, params: &EvalParams
+    board: &mut Board,
+    depth: u8,
+    mut alpha: i32,
+    beta: i32,
+    ply: i32,
+    tt: &mut TranspositionTable,
+    hh: &mut HistoryHierarchy,
+    abort_flag: &Arc<AtomicBool>,
+    start_time: Instant,
+    time_limit: Option<Duration>,
+    nodes: &mut u64,
+    params: &EvalParams,
 ) -> i32 {
-    
     *nodes += 1;
     if *nodes & 2047 == 0 {
         if abort_flag.load(Ordering::Relaxed) {
-            return 0; 
+            return 0;
         }
         if let Some(limit) = time_limit {
             if start_time.elapsed() >= limit {
@@ -142,7 +194,7 @@ fn negamax(
     }
 
     if depth == 0 {
-        return quiescence_search(board, alpha, beta, tt, params);
+        return quiescence_search(board, alpha, beta, tt, params, nodes);
     }
 
     let hash = board.hash_history.last().copied().unwrap_or(0);
@@ -163,93 +215,229 @@ fn negamax(
     let in_check = board.is_square_attacked(king_sq, them);
     let eval = board.evaluate(alpha, beta, params);
 
-    if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1) {
-        if eval >= beta {
-            board.make_null_move();
-            let nm_score = -negamax(
-                board, depth - 1 - NMP_R, -beta, -beta + 1, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes, params
-            );
-            board.unmake_null_move();
-            
-            if abort_flag.load(Ordering::Relaxed) { return 0; }
-            
-            if nm_score >= beta { return beta; }
+    if (depth <= 5) && (!in_check) && (ply > 0) & (eval.abs() < MATE_VALUE - 100) {
+        let margin = depth as i32 * 75;
+        if eval - margin >= beta {
+            return eval;
         }
     }
 
+    if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1)
+    {
+        if eval >= beta {
+            board.make_null_move();
+            let nm_score = -negamax(
+                board,
+                depth - 1 - NMP_R,
+                -beta,
+                -beta + 1,
+                ply + 1,
+                tt,
+                hh,
+                abort_flag,
+                start_time,
+                time_limit,
+                nodes,
+                params,
+            );
+            board.unmake_null_move();
+
+            if abort_flag.load(Ordering::Relaxed) {
+                return 0;
+            }
+
+            if nm_score >= beta {
+                return beta;
+            }
+        }
+    }
+
+    let mut tt_move = tt.probe_move(hash);
+
+    if depth >= 4 && tt_move.is_none() && !in_check {
+        let iid_depth = depth - 2;
+        let _ = negamax(
+            board, iid_depth, alpha, beta, ply, tt, hh, abort_flag, start_time, time_limit, nodes,
+            params,
+        );
+
+        tt_move = tt.probe_move(hash);
+    }
+
     let mut moves = board.generate_all_moves();
-    let tt_move = tt.probe_move(hash);
-    moves.sort_unstable_by_key(|&mv| std::cmp::Reverse(score_move_iterative(board, mv, tt_move, tt, hh, ply)));
+    moves.sort_unstable_by_key(|&mv| {
+        std::cmp::Reverse(score_move_iterative(board, mv, tt_move, tt, hh, ply))
+    });
 
     let mut legal_moves = 0;
     let mut best_move: Option<Move> = None;
     let mut tt_flag = TTFlag::Alpha;
+    let mut quiet_moves_played: [Option<Move>; 64] = [None; 64];
+    let mut quiet_count = 0;
     let futility_margin = 150 + (depth as i32 * 100);
 
     for mv in moves {
         if !board.make_move(mv, params) {
-            continue; 
+            continue;
         }
         legal_moves += 1;
 
+        let is_quiet = !mv.is_capture() && !mv.is_promotion();
+        if is_quiet && quiet_count < 64 {
+            quiet_moves_played[quiet_count] = Some(mv);
+            quiet_count += 1;
+        }
 
         let mut score;
         let gives_check = board.is_square_attacked(
             board.pieces[them as usize][PieceType::King as usize].get_lsb(),
-            us
+            us,
         );
-        let extension = if gives_check && ply < MAX_EXTENSION_DEPTH as i32 { 1 } else { 0 };
+        let extension = if gives_check && ply < MAX_EXTENSION_DEPTH as i32 {
+            1
+        } else {
+            0
+        };
 
         let futility_zone = (eval + futility_margin) < alpha;
 
-        if (depth <= 2) && (!in_check) && (!gives_check) && (!mv.is_capture())
-            && (!mv.is_promotion()) && (eval.abs() < MATE_VALUE - 100)
-            && futility_zone {
-                board.unmake_move(mv);
-                continue;
+        if (depth <= 2)
+            && (!in_check)
+            && (!gives_check)
+            && (!mv.is_capture())
+            && (!mv.is_promotion())
+            && (eval.abs() < MATE_VALUE - 100)
+            && futility_zone
+        {
+            board.unmake_move(mv);
+            continue;
         }
 
-        if (!mv.is_capture()) && (!mv.is_promotion()) && (!in_check) && (!gives_check)
-            && (board.piece_at(mv.get_target()).unwrap_or(PieceType::Pawn) != PieceType::King) 
-            && (legal_moves >= 5) && (depth > 3) {
-
-            let mut lmr_r = LMR_TABLE.get().unwrap()[depth as usize][legal_moves.min(63)];
-            if lmr_r >= depth { lmr_r = depth - 1; }
-
+        if legal_moves == 1 {
             score = -negamax(
-                board, depth - 1 - lmr_r, -beta, -alpha, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes, params
+                board,
+                depth - 1 + extension,
+                -beta,
+                -alpha,
+                ply + 1,
+                tt,
+                hh,
+                abort_flag,
+                start_time,
+                time_limit,
+                nodes,
+                params,
             );
+        } else {
+            let do_lmr = (!mv.is_capture())
+                && (!mv.is_promotion())
+                && (!in_check)
+                && (!gives_check)
+                && (board.piece_at(mv.get_target()).unwrap_or(PieceType::Pawn) != PieceType::King)
+                && (legal_moves >= 5)
+                && (depth > 3);
 
-            if score > alpha {
+            if do_lmr {
+                let mut lmr_r = LMR_TABLE.get().unwrap()[depth as usize][legal_moves.min(63)];
+                if lmr_r >= depth {
+                    lmr_r = depth - 1;
+                }
+
                 score = -negamax(
-                    board, depth - 1, -beta, -alpha, ply + 1, 
-                    tt, hh, abort_flag, start_time, time_limit, nodes, params
+                    board,
+                    depth - 1 - lmr_r,
+                    -alpha - 1,
+                    -alpha,
+                    ply + 1,
+                    tt,
+                    hh,
+                    abort_flag,
+                    start_time,
+                    time_limit,
+                    nodes,
+                    params,
+                );
+
+                if score > alpha {
+                    score = -negamax(
+                        board,
+                        depth - 1 + extension,
+                        -alpha - 1,
+                        -alpha,
+                        ply + 1,
+                        tt,
+                        hh,
+                        abort_flag,
+                        start_time,
+                        time_limit,
+                        nodes,
+                        params,
+                    );
+                }
+            } else {
+                score = -negamax(
+                    board,
+                    depth - 1 + extension,
+                    -alpha - 1,
+                    -alpha,
+                    ply + 1,
+                    tt,
+                    hh,
+                    abort_flag,
+                    start_time,
+                    time_limit,
+                    nodes,
+                    params,
                 );
             }
-        } 
-        else {
-            score = -negamax(
-                board, depth - 1 + extension, -beta, -alpha, ply + 1, 
-                tt, hh, abort_flag, start_time, time_limit, nodes, params
-            );
+
+            if score > alpha && score < beta {
+                score = -negamax(
+                    board,
+                    depth - 1 + extension,
+                    -beta,
+                    -alpha,
+                    ply + 1,
+                    tt,
+                    hh,
+                    abort_flag,
+                    start_time,
+                    time_limit,
+                    nodes,
+                    params,
+                );
+            }
         }
-        
+
         board.unmake_move(mv);
 
-        if abort_flag.load(Ordering::Relaxed) { return 0; }
+        if abort_flag.load(Ordering::Relaxed) {
+            return 0;
+        }
 
         if score >= beta {
             tt.write(hash, depth, beta, Some(mv), TTFlag::Beta);
             tt.write_killer(mv, ply);
-            
+
+            if is_quiet {
+                let bonus = (depth as i32) * (depth as i32);
+                hh.write(board.side_to_move, mv, bonus);
+
+                for i in 0..quiet_count {
+                    if let Some(played_mv) = quiet_moves_played[i] {
+                        if played_mv != mv {
+                            hh.write(board.side_to_move, played_mv, -bonus);
+                        }
+                    }
+                }
+            }
+
             if !mv.is_capture() && !mv.is_promotion() {
                 hh.write(board.side_to_move, mv, (depth as i32) * (depth as i32));
             }
             return beta;
         }
-        
+
         if score > alpha {
             alpha = score;
             tt_flag = TTFlag::Exact;
@@ -272,8 +460,15 @@ fn negamax(
 
 /// Loops through all captures to calculate tactical positions at the end of
 /// a negamax search
-fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32,
-    tt: &mut TranspositionTable, params: &EvalParams) -> i32 {
+fn quiescence_search(
+    board: &mut Board,
+    mut alpha: i32,
+    beta: i32,
+    tt: &mut TranspositionTable,
+    params: &EvalParams,
+    nodes: &mut u64,
+) -> i32 {
+    *nodes += 1;
     let hash = board.hash_history.last().copied().unwrap_or(0);
     let mut tt_move = None;
     if let Some(entry) = tt.read(hash, QSEARCH_DEPTH) {
@@ -287,7 +482,7 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32,
     }
 
     let stand_pat = board.evaluate(alpha, beta, params);
-    
+
     if stand_pat >= beta {
         return beta;
     }
@@ -311,20 +506,30 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32,
     let mut best_q_move: Option<Move> = None;
 
     for mv in captures {
-        if (static_exchange_evaluation(board, mv) < 0) && (!mv.is_promotion()) { continue; }
+        let victim = board.piece_at(mv.get_target()).unwrap_or(PieceType::Pawn);
+        let victim_value = MVV_LVA_VALUES[victim as usize];
+        let delta_margin = 200;
 
-        if !board.make_move(mv, params) {
-            continue; 
+        if (stand_pat + victim_value + delta_margin < alpha) && (!mv.is_promotion()) {
+            continue;
         }
 
-        let score = -quiescence_search(board, -beta, -alpha, tt, params);
+        if (static_exchange_evaluation(board, mv) < 0) && (!mv.is_promotion()) {
+            continue;
+        }
+
+        if !board.make_move(mv, params) {
+            continue;
+        }
+
+        let score = -quiescence_search(board, -beta, -alpha, tt, params, nodes);
         board.unmake_move(mv);
 
         if score >= beta {
             tt.write(hash, QSEARCH_DEPTH, beta, Some(mv), TTFlag::Beta);
             return beta;
         }
-        
+
         if score > alpha {
             alpha = score;
             best_score = score;
@@ -340,7 +545,9 @@ fn quiescence_search(board: &mut Board, mut alpha: i32, beta: i32,
 /// Scores a move using the MVA-LVA (Most Valuable Victim - Least Valuable Attacker)
 /// heuristic to optimize the alpha-beta pruning
 fn score_move(board: &Board, mv: Move) -> i32 {
-    if mv.is_promotion() { return 9000; }
+    if mv.is_promotion() {
+        return 9000;
+    }
 
     let flag = mv.get_flags();
 
@@ -360,7 +567,14 @@ fn score_move(board: &Board, mv: Move) -> i32 {
 
 /// Helper function to sort moves for Iterative Deepening.
 /// Follows a strict hierarchy: TT Hit -> Tactics -> Killers -> History Heuristic.
-fn score_move_iterative(board: &Board, mv: Move, best_mv: Option<Move>, tt: &TranspositionTable, hh: &HistoryHierarchy, ply: i32) -> i32 {
+fn score_move_iterative(
+    board: &Board,
+    mv: Move,
+    best_mv: Option<Move>,
+    tt: &TranspositionTable,
+    hh: &HistoryHierarchy,
+    ply: i32,
+) -> i32 {
     if Some(mv) == best_mv {
         return 1_000_000;
     }
@@ -378,7 +592,7 @@ fn score_move_iterative(board: &Board, mv: Move, best_mv: Option<Move>, tt: &Tra
     hh.read(board.side_to_move, mv)
 }
 
-/// Pre-calculates the Late Move Reduction values for all combinations of 
+/// Pre-calculates the Late Move Reduction values for all combinations of
 /// depth and move_index to avoid floating-point math during the search.
 pub fn init_lmr_table() {
     print!("Initializing LMR values...\n");
@@ -396,7 +610,9 @@ pub fn init_lmr_table() {
         }
     }
 
-    LMR_TABLE.set(table).expect("Failed to initialize LMR Table");
+    LMR_TABLE
+        .set(table)
+        .expect("Failed to initialize LMR Table");
     print!("Successfully Generated LMR values!\n");
 }
 
@@ -419,8 +635,10 @@ pub fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
     loop {
         attacker = attacker.flip();
         gain[depth] = MVV_LVA_VALUES[attacker_piece as usize] - gain[depth - 1];
-        
-        if let Some(smallest_attacker) = board.get_smallest_attacker(target, attacker, sim_occupancy) {
+
+        if let Some(smallest_attacker) =
+            board.get_smallest_attacker(target, attacker, sim_occupancy)
+        {
             attacker_piece = smallest_attacker.0;
             sim_occupancy = sim_occupancy.clear_bit(smallest_attacker.1);
         } else {
@@ -434,5 +652,5 @@ pub fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
         gain[d - 1] = gain[d - 1].min(-gain[d]);
     }
 
-    return gain[0]
+    return gain[0];
 }

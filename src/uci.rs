@@ -1,18 +1,21 @@
 //! The Universal Chess Interface (UCI) Protocol Listener.
 //!
 //! This module allows the engine to communicate with standard chess GUIs.
-//! It utilizes multithreading and atomic variables to ensure the engine can 
+//! It utilizes multithreading and atomic variables to ensure the engine can
 //! listen for "stop" commands and manage time controls without freezing.
 
 use std::io::{self, BufRead};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
-use crate::board::{Board, PieceType, Color};
+use crate::board::{Board, Color, PieceType};
 use crate::eval::EvalParams;
-use crate::search::search_best_move;
 use crate::moves::Move;
+use crate::search::search_best_move;
 
 pub fn uci_loop() {
     let stdin = io::stdin();
@@ -26,7 +29,7 @@ pub fn uci_loop() {
     for line in stdin.lock().lines() {
         let input = line.unwrap_or_default();
         let cmd = input.trim();
-        
+
         if cmd.is_empty() {
             continue;
         }
@@ -92,7 +95,7 @@ fn parse_position(board: &mut Board, tokens: &[&str], params: &EvalParams) {
             fen.push(' ');
             current_idx += 1;
         }
-        *board = Board::from_fen(fen.trim(), params); 
+        *board = Board::from_fen(fen.trim(), params);
     }
 
     if current_idx < tokens.len() && tokens[current_idx] == "moves" {
@@ -120,26 +123,55 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
     let mut i = 1;
     while i < tokens.len() {
         match tokens[i] {
-            "depth" => { depth = tokens[i + 1].parse().unwrap_or(64); i += 1; }
-            "wtime" => { wtime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
-            "btime" => { btime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
-            "winc"  => { winc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
-            "binc"  => { binc = tokens[i + 1].parse().unwrap_or(0); i += 1; }
-            "movestogo" => { movestogo = tokens[i + 1].parse().unwrap_or(40); i += 1; }
-            "movetime" => { movetime = tokens[i + 1].parse().unwrap_or(0); i += 1; }
+            "depth" => {
+                depth = tokens[i + 1].parse().unwrap_or(64);
+                i += 1;
+            }
+            "wtime" => {
+                wtime = tokens[i + 1].parse().unwrap_or(0);
+                i += 1;
+            }
+            "btime" => {
+                btime = tokens[i + 1].parse().unwrap_or(0);
+                i += 1;
+            }
+            "winc" => {
+                winc = tokens[i + 1].parse().unwrap_or(0);
+                i += 1;
+            }
+            "binc" => {
+                binc = tokens[i + 1].parse().unwrap_or(0);
+                i += 1;
+            }
+            "movestogo" => {
+                movestogo = tokens[i + 1].parse().unwrap_or(40);
+                i += 1;
+            }
+            "movetime" => {
+                movetime = tokens[i + 1].parse().unwrap_or(0);
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
 
     let mut allocated_time: Option<Duration> = None;
-    
+
     if movetime > 0 {
         allocated_time = Some(Duration::from_millis(movetime));
     } else if !tokens.contains(&"depth") {
-        let our_time = if board.side_to_move == Color::White { wtime } else { btime };
-        let our_inc = if board.side_to_move == Color::White { winc } else { binc };
-        
+        let our_time = if board.side_to_move == Color::White {
+            wtime
+        } else {
+            btime
+        };
+        let our_inc = if board.side_to_move == Color::White {
+            winc
+        } else {
+            binc
+        };
+
         if our_time > 0 {
             let time_for_move = (our_time / (movestogo + 5)) + (our_inc / 2);
             allocated_time = Some(Duration::from_millis(time_for_move));
@@ -149,7 +181,7 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
     let search_board = board.clone();
 
     thread::spawn(move || {
-        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time, true) {
+        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time, false) {
             println!("bestmove {}", format_uci_move(mv));
         } else {
             println!("bestmove 0000");
@@ -161,7 +193,9 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
 
 fn parse_uci_move(board: &mut Board, move_str: &str) -> Option<Move> {
     let clean_str = move_str.trim().to_lowercase();
-    if clean_str.len() < 4 { return None; }
+    if clean_str.len() < 4 {
+        return None;
+    }
 
     let chars: Vec<char> = clean_str.chars().collect();
     let start_file = chars[0] as i32 - 'a' as i32;
@@ -205,7 +239,13 @@ pub fn format_uci_move(mv: Move) -> String {
     let start = mv.get_start() as usize;
     let target = mv.get_target() as usize;
 
-    let mut out = format!("{}{}{}{}", files[start % 8], ranks[start / 8], files[target % 8], ranks[target / 8]);
+    let mut out = format!(
+        "{}{}{}{}",
+        files[start % 8],
+        ranks[start / 8],
+        files[target % 8],
+        ranks[target / 8]
+    );
 
     if mv.is_promotion() {
         let promo_char = match mv.get_promotion_piece().unwrap() {

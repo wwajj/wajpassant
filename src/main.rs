@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use wajpassant::attacks::init_attacks;
-use wajpassant::board::Board; 
+use wajpassant::board::Board;
 use wajpassant::cli::cli_loop;
 use wajpassant::eval::EvalParams;
 use wajpassant::search::init_lmr_table;
@@ -18,7 +18,7 @@ fn main() {
 
     if args.contains(&String::from("--cli")) {
         cli_loop();
-    } 
+    }
     // Handle standard perft
     else if let Some(pos) = args.iter().position(|arg| arg == "--perft") {
         if let Some(depth_str) = args.get(pos + 1) {
@@ -42,9 +42,12 @@ fn main() {
                         Some(fen) => Board::from_fen(fen, &params),
                         None => Board::default(),
                     };
-                    
+
                     let nodes = board.perft_debug(depth, String::new(), &mut file);
-                    println!("Debug Perft depth {}: {} nodes. Written to {}", depth, nodes, file_path);
+                    println!(
+                        "Debug Perft depth {}: {} nodes. Written to {}",
+                        depth, nodes, file_path
+                    );
                 } else {
                     eprintln!("Error: Could not create file at {}", file_path);
                 }
@@ -54,8 +57,7 @@ fn main() {
         } else {
             eprintln!("Error: --perft-debug requires <depth> and <output_file>.");
         }
-    } 
-    else {
+    } else {
         uci_loop();
     }
 }

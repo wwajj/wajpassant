@@ -1,11 +1,11 @@
 //! Pre-calculated attack tables and Magic Bitboard generation.
 //!
-//! This module is responsible for generating and storing the attack maps for every 
-//! piece on the board. For Leapers (Knights, Kings) and Pawns, it stores absolute 
-//! attack bitboards. For Sliders (Bishops, Rooks, Queens), it implements the 
+//! This module is responsible for generating and storing the attack maps for every
+//! piece on the board. For Leapers (Knights, Kings) and Pawns, it stores absolute
+//! attack bitboards. For Sliders (Bishops, Rooks, Queens), it implements the
 //! Magic Bitboard hashing technique for instantaneous attack retrieval during the game.
 
-use crate::bitboard::{Bitboard, Square, SQUARES, NOT_A_FILE, NOT_H_FILE};
+use crate::bitboard::{Bitboard, NOT_A_FILE, NOT_H_FILE, SQUARES, Square};
 use crate::magics::{BISHOP_MAGICS, ROOK_MAGICS};
 
 // --- Constants ---
@@ -35,8 +35,10 @@ pub static mut KING_ATTACKS: [Bitboard; 64] = [Bitboard::empty(); 64];
 pub static mut BISHOP_MASKS: [Bitboard; 64] = [Bitboard::empty(); 64];
 pub static mut ROOK_MASKS: [Bitboard; 64] = [Bitboard::empty(); 64];
 
-pub static mut BISHOP_ATTACKS: [[Bitboard; BISHOP_BLOCKERS as usize]; 64] = [[Bitboard::empty(); BISHOP_BLOCKERS as usize]; 64];
-pub static mut ROOK_ATTACKS: [[Bitboard; ROOK_BLOCKERS as usize]; 64] = [[Bitboard::empty(); ROOK_BLOCKERS as usize]; 64];
+pub static mut BISHOP_ATTACKS: [[Bitboard; BISHOP_BLOCKERS as usize]; 64] =
+    [[Bitboard::empty(); BISHOP_BLOCKERS as usize]; 64];
+pub static mut ROOK_ATTACKS: [[Bitboard; ROOK_BLOCKERS as usize]; 64] =
+    [[Bitboard::empty(); ROOK_BLOCKERS as usize]; 64];
 
 // --- Initialization ---
 
@@ -67,7 +69,9 @@ pub fn init_attacks() {
         let mut attacks = Bitboard::empty();
         for offset in KNIGHT_OFFSETS {
             let new_sq = offset + (sq_idx as i8);
-            if new_sq > 63 || new_sq < 0 { continue; }
+            if new_sq > 63 || new_sq < 0 {
+                continue;
+            }
 
             let mut shifted = if offset > 0 {
                 bb << (offset as usize)
@@ -77,9 +81,9 @@ pub fn init_attacks() {
 
             shifted &= match offset {
                 17 | -15 => Bitboard(NOT_A_FILE),
-                10 | -6  => Bitboard(NOT_AB_FILE),
+                10 | -6 => Bitboard(NOT_AB_FILE),
                 15 | -17 => Bitboard(NOT_H_FILE),
-                6  | -10 => Bitboard(NOT_GH_FILE),
+                6 | -10 => Bitboard(NOT_GH_FILE),
                 _ => Bitboard::full(),
             };
 
@@ -90,11 +94,13 @@ pub fn init_attacks() {
         }
 
         // King Logic
-        let mut attacks = Bitboard::empty(); 
+        let mut attacks = Bitboard::empty();
 
         for offset in KING_OFFSETS {
             let new_sq = offset + (sq_idx as i8);
-            if new_sq > 63 || new_sq < 0 { continue; }
+            if new_sq > 63 || new_sq < 0 {
+                continue;
+            }
 
             let mut shifted = if offset > 0 {
                 bb << (offset as usize)
@@ -103,8 +109,8 @@ pub fn init_attacks() {
             };
 
             shifted &= match offset {
-                -7 |  1 |  9 => Bitboard(NOT_A_FILE),
-                 7 | -1 | -9 => Bitboard(NOT_H_FILE),
+                -7 | 1 | 9 => Bitboard(NOT_A_FILE),
+                7 | -1 | -9 => Bitboard(NOT_H_FILE),
                 _ => Bitboard::full(),
             };
 
@@ -137,7 +143,9 @@ pub fn init_attacks() {
                 BISHOP_ATTACKS[sq_idx][magic_index] = move_map;
             }
             occupancy = Bitboard(occupancy.0.wrapping_sub(1) & mask);
-            if occupancy == Bitboard::empty() { break; }
+            if occupancy == Bitboard::empty() {
+                break;
+            }
         }
 
         // Rook Magic Initialization (Carry-Rippler)
@@ -153,7 +161,9 @@ pub fn init_attacks() {
                 ROOK_ATTACKS[sq_idx][magic_index] = move_map;
             }
             occupancy = Bitboard(occupancy.0.wrapping_sub(1) & mask);
-            if occupancy == Bitboard::empty() { break; }
+            if occupancy == Bitboard::empty() {
+                break;
+            }
         }
     }
     print!("Attack Lookup Tables Generated Successfully!\n");
@@ -258,7 +268,9 @@ pub fn get_bishop_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r <= 7 && f <= 7 {
         let target_sq = (r * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r += 1;
         f += 1;
     }
@@ -268,7 +280,9 @@ pub fn get_bishop_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r <= 7 && f >= 0 {
         let target_sq = (r * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r += 1;
         f -= 1;
     }
@@ -278,7 +292,9 @@ pub fn get_bishop_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r >= 0 && f <= 7 {
         let target_sq = (r * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r -= 1;
         f += 1;
     }
@@ -288,7 +304,9 @@ pub fn get_bishop_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r >= 0 && f >= 0 {
         let target_sq = (r * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r -= 1;
         f -= 1;
     }
@@ -306,7 +324,9 @@ pub fn get_rook_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r <= 7 {
         let target_sq = (r * 8 + file) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r += 1;
     }
 
@@ -315,7 +335,9 @@ pub fn get_rook_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while r >= 0 {
         let target_sq = (r * 8 + file) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         r -= 1;
     }
 
@@ -324,7 +346,9 @@ pub fn get_rook_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while f <= 7 {
         let target_sq = (rank * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         f += 1;
     }
 
@@ -333,7 +357,9 @@ pub fn get_rook_attacks_slow(sq: Square, blockers: Bitboard) -> Bitboard {
     while f >= 0 {
         let target_sq = (rank * 8 + f) as usize;
         attacks |= Bitboard(1u64) << target_sq;
-        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() { break; }
+        if (blockers & (Bitboard(1u64) << target_sq)) != Bitboard::empty() {
+            break;
+        }
         f -= 1;
     }
     attacks
@@ -349,9 +375,9 @@ pub fn get_bishop_attacks(sq: Square, occupancy: Bitboard) -> Bitboard {
         let mask = BISHOP_MASKS[sq_idx].0;
         let blockers = occupancy.0 & mask;
         let magic = BISHOP_MAGICS[sq_idx];
-        
-        let shift = 64 - BISHOP_MASKS[sq_idx].count(); 
-        
+
+        let shift = 64 - BISHOP_MASKS[sq_idx].count();
+
         let magic_index = (blockers.wrapping_mul(magic) >> shift) as usize;
         BISHOP_ATTACKS[sq_idx][magic_index]
     }
@@ -365,9 +391,9 @@ pub fn get_rook_attacks(sq: Square, occupancy: Bitboard) -> Bitboard {
         let mask = ROOK_MASKS[sq_idx].0;
         let blockers = occupancy.0 & mask;
         let magic = ROOK_MAGICS[sq_idx];
-        
+
         let shift = 64 - ROOK_MASKS[sq_idx].count();
-        
+
         let magic_index = (blockers.wrapping_mul(magic) >> shift) as usize;
         ROOK_ATTACKS[sq_idx][magic_index]
     }

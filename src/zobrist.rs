@@ -7,7 +7,7 @@ pub static ZOBRIST_CASTLING: OnceLock<[u64; 16]> = OnceLock::new();
 pub static ZOBRIST_EN_PASSANT: OnceLock<[u64; 8]> = OnceLock::new();
 
 /// A fast, deterministic 64-bit Pseudo-Random Number Generator using the Xorshift64 algorithm.
-/// 
+///
 /// Keeps a local state variable and applies three bit-shifts and XORs to mix the bits.
 /// This guarantees the exact same sequence of numbers on every engine boot.
 fn xorshift64(state: &mut u64) -> u64 {
@@ -44,9 +44,17 @@ pub fn init_zobrist() {
         en_passant[i] = xorshift64(&mut seed);
     }
 
-    ZOBRIST_PIECES.set(pieces).unwrap_or_else(|_| panic!("Failed to set ZOBRIST_PIECES"));
-    ZOBRIST_SIDE.set(side).unwrap_or_else(|_| panic!("Failed to set ZOBRIST_SIDE"));
-    ZOBRIST_CASTLING.set(castling).unwrap_or_else(|_| panic!("Failed to set ZOBRIST_CASTLING"));
-    ZOBRIST_EN_PASSANT.set(en_passant).unwrap_or_else(|_| panic!("Failed to set ZOBRIST_EN_PASSANT"));
+    ZOBRIST_PIECES
+        .set(pieces)
+        .unwrap_or_else(|_| panic!("Failed to set ZOBRIST_PIECES"));
+    ZOBRIST_SIDE
+        .set(side)
+        .unwrap_or_else(|_| panic!("Failed to set ZOBRIST_SIDE"));
+    ZOBRIST_CASTLING
+        .set(castling)
+        .unwrap_or_else(|_| panic!("Failed to set ZOBRIST_CASTLING"));
+    ZOBRIST_EN_PASSANT
+        .set(en_passant)
+        .unwrap_or_else(|_| panic!("Failed to set ZOBRIST_EN_PASSANT"));
     print!("Zorbist Hash Tables Successfully Generated...\n");
 }

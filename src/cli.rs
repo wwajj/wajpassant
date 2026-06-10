@@ -1,13 +1,13 @@
 //! Command Line Interface for playing against the engine directly in the terminal.
 
 use std::io::{self, Write};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::board::{Board, Color, PieceType};
 use crate::eval::EvalParams;
-use crate::search::search_best_move;
 use crate::moves::Move;
+use crate::search::search_best_move;
 
 pub fn cli_loop() {
     let params = EvalParams::new();
@@ -17,10 +17,10 @@ pub fn cli_loop() {
     println!("WajPassant CLI");
     print!("Do you want to play as White (w) or Black (b)? ");
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
-    
+
     let user_color = if input.trim().to_lowercase() == "b" {
         println!("You are playing Black. WajPassant is White.");
         Color::Black
@@ -30,12 +30,12 @@ pub fn cli_loop() {
     };
 
     loop {
-        print_board_cli(&board, user_color); 
+        print_board_cli(&board, user_color);
 
         if board.side_to_move == user_color {
             print!("Enter your move (e.g., e2e4): ");
             io::stdout().flush().unwrap();
-            
+
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             let move_str = input.trim();
@@ -53,9 +53,9 @@ pub fn cli_loop() {
             }
         } else {
             let abort_flag = Arc::new(AtomicBool::new(false));
-            
+
             if let Some(best_move) = search_best_move(board.clone(), 7, abort_flag, None, false) {
-                println!("WajPassant plays: {}", format_move(best_move)); 
+                println!("WajPassant plays: {}", format_move(best_move));
                 board.make_move(best_move, &params); // Actually update the CLI board state
             } else {
                 println!("Game Over! WajPassant has no legal moves.");
@@ -85,13 +85,17 @@ fn print_board_cli(board: &Board, perspective: Color) {
         for &file in &files {
             let sq = rank * 8 + file;
             let mut piece_char = '.';
-            
+
             let chars = ['P', 'N', 'B', 'R', 'Q', 'K'];
             for side in 0..2 {
                 for pt in 0..6 {
                     if (board.pieces[side][pt].0 & (1u64 << sq)) != 0 {
                         let c = chars[pt];
-                        piece_char = if side == Color::White as usize { c } else { c.to_ascii_lowercase() };
+                        piece_char = if side == Color::White as usize {
+                            c
+                        } else {
+                            c.to_ascii_lowercase()
+                        };
                     }
                 }
             }
@@ -99,7 +103,7 @@ fn print_board_cli(board: &Board, perspective: Color) {
         }
         println!();
     }
-    
+
     print!("   -----------------\n     ");
     for &file in &files {
         print!("{} ", (b'a' + file as u8) as char);
@@ -110,7 +114,9 @@ fn print_board_cli(board: &Board, perspective: Color) {
 /// Parses a standard coordinate string (e.g., "e2e4") into an internal Move struct.
 fn parse_user_move(board: &mut Board, move_str: &str) -> Option<Move> {
     let clean_str = move_str.trim().to_lowercase();
-    if clean_str.len() < 4 || clean_str.len() > 5 { return None; }
+    if clean_str.len() < 4 || clean_str.len() > 5 {
+        return None;
+    }
 
     let chars: Vec<char> = clean_str.chars().collect();
     let start_file = chars[0] as i32 - 'a' as i32;
@@ -118,8 +124,15 @@ fn parse_user_move(board: &mut Board, move_str: &str) -> Option<Move> {
     let target_file = chars[2] as i32 - 'a' as i32;
     let target_rank = chars[3] as i32 - '1' as i32;
 
-    if start_file < 0 || start_file > 7 || start_rank < 0 || start_rank > 7 ||
-       target_file < 0 || target_file > 7 || target_rank < 0 || target_rank > 7 {
+    if start_file < 0
+        || start_file > 7
+        || start_rank < 0
+        || start_rank > 7
+        || target_file < 0
+        || target_file > 7
+        || target_rank < 0
+        || target_rank > 7
+    {
         return None;
     }
 
@@ -159,7 +172,13 @@ fn format_move(mv: Move) -> String {
     let start = mv.get_start() as usize;
     let target = mv.get_target() as usize;
 
-    let mut out = format!("{}{}{}{}", files[start % 8], ranks[start / 8], files[target % 8], ranks[target / 8]);
+    let mut out = format!(
+        "{}{}{}{}",
+        files[start % 8],
+        ranks[start / 8],
+        files[target % 8],
+        ranks[target / 8]
+    );
 
     if mv.is_promotion() {
         let promo_char = match mv.get_promotion_piece().unwrap() {

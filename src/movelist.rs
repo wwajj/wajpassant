@@ -1,12 +1,12 @@
 //! High-performance, stack-allocated move storage.
 //!
 //! During move generation, a chess engine evaluates millions of positions per second.
-//! Dynamically allocating memory (like using a standard `Vec`) for each position's 
-//! move list would be a massive performance bottleneck. 
+//! Dynamically allocating memory (like using a standard `Vec`) for each position's
+//! move list would be a massive performance bottleneck.
 //!
-//! The `MoveList` solves this by pre-allocating a fixed-size array directly on the 
-//! stack. Because the mathematical upper limit for legal moves in any chess position 
-//! is 218, a capacity of 256 guarantees we will never overflow while maintaining 
+//! The `MoveList` solves this by pre-allocating a fixed-size array directly on the
+//! stack. Because the mathematical upper limit for legal moves in any chess position
+//! is 218, a capacity of 256 guarantees we will never overflow while maintaining
 //! lightning-fast memory access.
 
 use crate::moves::Move;
@@ -40,12 +40,15 @@ impl MoveList {
     }
 
     /// Appends a `Move` to the end of the list and increments the internal counter.
-    /// 
-    /// **Panics:** If the engine attempts to push more than 256 moves in a single turn 
+    ///
+    /// **Panics:** If the engine attempts to push more than 256 moves in a single turn
     /// (only possible in debug mode).
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
-        debug_assert!(self.count < 256, "FATAL: MoveList overflowed the 256 limit!");
+        debug_assert!(
+            self.count < 256,
+            "FATAL: MoveList overflowed the 256 limit!"
+        );
         self.moves[self.count] = mv;
         self.count += 1;
     }
