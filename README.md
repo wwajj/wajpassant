@@ -2,7 +2,16 @@
 
 A high-performance, UCI-compatible chess engine written in Rust. WajPassant features a highly optimized bitboard board representation and a custom-built, parallelized Texel Tuner that uses supervised machine learning to independently derive advanced positional chess intuition.
 
-**Current Strength:** ~2030 Elo *(Calibrated via `cutechess-cli` against handicapped Stockfish-2000)*
+**Current Strength:** ~2150 Elo *(Calibrated via `cutechess-cli` against handicapped Stockfish-2000)*
+```bash
+ --------------------------------------------------
+Results of WajPassant vs Stockfish-2000 (10+0.1, NULL - 1t, NULL - 16MB, UHO_openings.epd):
+Elo: 149.26 +/- 55.24, nElo: 148.57 +/- 48.15
+LOS: 100.00 %, DrawRatio: 32.00 %, PairsRatio: 4.67
+Games: 200, Wins: 136, Losses: 55, Draws: 9, Points: 140.5 (70.25 %)
+Ptnml(0-2): [11, 1, 32, 8, 48], WL/DD Ratio: inf
+-------------------------------------------------- 
+```
 
 ## Key Features
 
