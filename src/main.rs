@@ -14,8 +14,7 @@ fn main() {
     init_lmr_table();
     init_zobrist();
     if !NNUEWeights::load_from_file("wajpassant.bin") {
-        println!("wajpassant.bin missing!");
-        return;
+        println!("info string wajpassant.bin missing, falling back to classical evaluation.");
     }
 
     let args: Vec<String> = env::args().collect();
