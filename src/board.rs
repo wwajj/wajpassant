@@ -14,6 +14,7 @@ use crate::bitboard::{Bitboard, NOT_A_FILE, NOT_H_FILE, SQUARES, Square};
 use crate::eval::EvalParams;
 use crate::movegen::{SIXTH_RANK, THIRD_RANK};
 use crate::moves::*;
+use crate::nnue::{GLOBAL_WEIGHTS, NNUEState, NNUEWeights, evaluate_nnue};
 use crate::zobrist::{ZOBRIST_CASTLING, ZOBRIST_EN_PASSANT, ZOBRIST_PIECES, ZOBRIST_SIDE};
 
 /// Starting position bitboard masks for White pieces.
@@ -43,7 +44,7 @@ pub const CASTLING_PERM: [u8; 64] = [
     15, 15, 15, 15, 15, 15, 15, 15, // Rank 5
     15, 15, 15, 15, 15, 15, 15, 15, // Rank 6
     15, 15, 15, 15, 15, 15, 15, 15, // Rank 7
-    7, 15, 15, 15, 3, 15, 15, 11, // Rank 8
+    07, 15, 15, 15, 03, 15, 15, 11, // Rank 8
 ];
 
 /// Represents the two players in a chess game.
@@ -160,6 +161,9 @@ pub struct Board {
     pub phase: i32,
     // History stack to track positions over time
     pub hash_history: Vec<u64>,
+    // NNUE tracking
+    pub current_nnue: NNUEState,
+    pub nnue_history: Vec<NNUEState>,
 }
 
 // Standard traits
@@ -204,6 +208,8 @@ impl Default for Board {
             eg_score: 0,
             phase: 0,
             hash_history: Vec::new(),
+            current_nnue: NNUEState::new(),
+            nnue_history: Vec::with_capacity(256),
         };
 
         let initial_hash = board.calculate_hash();
@@ -230,6 +236,8 @@ impl Board {
             eg_score: 0,
             phase: 0,
             hash_history: Vec::new(),
+            current_nnue: NNUEState::new(),
+            nnue_history: Vec::with_capacity(256),
         };
 
         let initial_hash = board.calculate_hash();
@@ -320,6 +328,10 @@ impl Board {
 
         board.update_occupancies();
         board.init_eval(params);
+
+        if let Some(weights) = GLOBAL_WEIGHTS.get() {
+            board.current_nnue.refresh(&board.pieces, weights);
+        }
 
         let initial_hash = board.calculate_hash();
         board.hash_history.push(initial_hash);
@@ -602,9 +614,81 @@ impl Board {
             self.phase,
         );
         self.history.push(record);
+        self.nnue_history.push(self.current_nnue);
 
         let us = self.side_to_move;
         let them = us.flip();
+
+        if let Some(weights) = GLOBAL_WEIGHTS.get() {
+            let w_king = self.pieces[Color::White as usize][PieceType::King as usize].get_lsb();
+            let b_king = self.pieces[Color::Black as usize][PieceType::King as usize].get_lsb();
+
+            if moved != PieceType::King {
+                if let Some(w_idx) =
+                    NNUEWeights::get_feature_index(w_king, Color::White, start, us, moved)
+                {
+                    self.current_nnue.white_acc.remove_feature(weights, w_idx);
+                }
+                if let Some(b_idx) =
+                    NNUEWeights::get_feature_index(b_king, Color::Black, start, us, moved)
+                {
+                    self.current_nnue.black_acc.remove_feature(weights, b_idx);
+                }
+
+                if let Some(cap_pt) = captured {
+                    if let Some(w_idx) =
+                        NNUEWeights::get_feature_index(w_king, Color::White, target, them, cap_pt)
+                    {
+                        self.current_nnue.white_acc.remove_feature(weights, w_idx);
+                    }
+                    if let Some(b_idx) =
+                        NNUEWeights::get_feature_index(b_king, Color::Black, target, them, cap_pt)
+                    {
+                        self.current_nnue.black_acc.remove_feature(weights, b_idx);
+                    }
+                } else if flag == FLAG_EN_PASSANT {
+                    let cap_sq = if us == Color::White {
+                        target as usize - 8
+                    } else {
+                        target as usize + 8
+                    };
+                    if let Some(w_idx) = NNUEWeights::get_feature_index(
+                        w_king,
+                        Color::White,
+                        SQUARES[cap_sq],
+                        them,
+                        PieceType::Pawn,
+                    ) {
+                        self.current_nnue.white_acc.remove_feature(weights, w_idx);
+                    }
+                    if let Some(b_idx) = NNUEWeights::get_feature_index(
+                        b_king,
+                        Color::Black,
+                        SQUARES[cap_sq],
+                        them,
+                        PieceType::Pawn,
+                    ) {
+                        self.current_nnue.black_acc.remove_feature(weights, b_idx);
+                    }
+                }
+
+                let final_pt = if mv.is_promotion() {
+                    mv.get_promotion_piece().unwrap()
+                } else {
+                    moved
+                };
+                if let Some(w_idx) =
+                    NNUEWeights::get_feature_index(w_king, Color::White, target, us, final_pt)
+                {
+                    self.current_nnue.white_acc.add_feature(weights, w_idx);
+                }
+                if let Some(b_idx) =
+                    NNUEWeights::get_feature_index(b_king, Color::Black, target, us, final_pt)
+                {
+                    self.current_nnue.black_acc.add_feature(weights, b_idx);
+                }
+            }
+        }
 
         let move_mask = (1u64 << start as u64) | (1u64 << target as u64);
         self.pieces[us as usize][moved as usize] ^= Bitboard(move_mask);
@@ -702,6 +786,12 @@ impl Board {
         let new_hash = self.calculate_hash();
         self.hash_history.push(new_hash);
 
+        if let Some(weights) = GLOBAL_WEIGHTS.get() {
+            if moved == PieceType::King {
+                self.current_nnue.refresh(&self.pieces, weights);
+            }
+        }
+
         let king_sq = self.pieces[us as usize][PieceType::King as usize].get_lsb();
         if self.is_square_attacked(king_sq, them) {
             self.unmake_move(mv);
@@ -718,6 +808,7 @@ impl Board {
             .history
             .pop()
             .expect("Tried to unmake a move with empty UndoRecord Vector");
+        self.current_nnue = self.nnue_history.pop().expect("NNUE history empty");
 
         self.side_to_move = self.side_to_move.flip();
         let us = self.side_to_move;
@@ -1126,6 +1217,9 @@ impl Board {
 
     /// Returns the tapered evaluation of the current position in centipawns.
     pub fn evaluate(&self, alpha: i32, beta: i32, params: &EvalParams) -> i32 {
+        if let Some(weights) = GLOBAL_WEIGHTS.get() {
+            return evaluate_nnue(&self.current_nnue, self.side_to_move, weights);
+        }
         let p = self.phase.min(crate::eval::MAX_PHASE);
 
         let mut bonus = 0;
@@ -1509,6 +1603,7 @@ impl Board {
             self.phase,
         );
         self.history.push(history);
+        self.nnue_history.push(self.current_nnue);
 
         let mut new_hash = *self.hash_history.last().unwrap();
         if let Some(ep_sq) = self.en_passant {
@@ -1527,6 +1622,7 @@ impl Board {
     pub fn unmake_null_move(&mut self) {
         self.hash_history.pop();
         let history = self.history.pop().unwrap();
+        self.current_nnue = self.nnue_history.pop().expect("NNUE history empty");
 
         self.side_to_move = self.side_to_move.flip();
         self.en_passant = history.en_passant;

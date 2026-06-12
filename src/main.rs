@@ -4,6 +4,7 @@ use wajpassant::attacks::init_attacks;
 use wajpassant::board::Board;
 use wajpassant::cli::cli_loop;
 use wajpassant::eval::EvalParams;
+use wajpassant::nnue::NNUEWeights;
 use wajpassant::search::init_lmr_table;
 use wajpassant::uci::uci_loop;
 use wajpassant::zobrist::init_zobrist;
@@ -12,6 +13,10 @@ fn main() {
     init_attacks();
     init_lmr_table();
     init_zobrist();
+    if !NNUEWeights::load_from_file("wajpassant.bin") {
+        println!("wajpassant.bin missing!");
+        return;
+    }
 
     let args: Vec<String> = env::args().collect();
     let params = EvalParams::new();

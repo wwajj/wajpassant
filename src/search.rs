@@ -162,7 +162,7 @@ pub fn search_best_move(
 }
 
 /// The recursive search function.
-fn negamax(
+pub fn negamax(
     board: &mut Board,
     depth: u8,
     mut alpha: i32,

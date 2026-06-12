@@ -101,7 +101,7 @@ impl NNUEState {
                     if let Some(b_idx) =
                         NNUEWeights::get_feature_index(b_king, Color::Black, sq, piece_color, pt)
                     {
-                        self.white_acc.add_feature(weights, b_idx);
+                        self.black_acc.add_feature(weights, b_idx);
                     }
                 }
             }
