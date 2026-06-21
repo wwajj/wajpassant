@@ -8,6 +8,7 @@ pub mod magics;
 pub mod movegen;
 pub mod movelist;
 pub mod moves;
+pub mod nnue;
 pub mod search;
 pub mod tt;
 pub mod uci;

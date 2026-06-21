@@ -1,8 +1,4 @@
 //! Minimax search with Alpha-Beta pruning.
-//!
-//! This module navigates the game tree using the Negamax framework. It evaluates
-//! future positions and prunes mathematically dead branches to find the optimal
-//! move for the current player.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -14,21 +10,55 @@ use crate::hh::HistoryHierarchy;
 use crate::moves::{FLAG_CAPTURE, FLAG_EN_PASSANT, Move};
 use crate::tt::{TTFlag, TranspositionTable};
 
-/// A global, safety initialized 64x64 array to hold LMR reduction values
 pub static LMR_TABLE: OnceLock<[[u8; 64]; 64]> = OnceLock::new();
-
-/// A score representing absolute victory (Checkmate).
 pub const INFINITY: i32 = 50000;
 pub const MATE_VALUE: i32 = 49000;
-
 const QSEARCH_DEPTH: u8 = 0;
 const MAX_EXTENSION_DEPTH: u8 = 8;
-
-// Reduction factor for Null Move Pruning
-const NMP_R: u8 = 2;
-
-/// Piece values for MVV_LVA lookup
 const MVV_LVA_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10000];
+
+pub struct MovePicker {
+    moves: Vec<Move>,
+    scores: Vec<i32>,
+}
+
+impl MovePicker {
+    pub fn new(
+        board: &Board,
+        tt_move: Option<Move>,
+        killers: &[[Option<Move>; 2]; 64],
+        hh: &HistoryHierarchy,
+        ply: i32,
+    ) -> Self {
+        let moves = board.generate_all_moves();
+        let mut scores = Vec::with_capacity(moves.len());
+
+        for &mv in &moves {
+            scores.push(score_move_iterative(board, mv, tt_move, killers, hh, ply));
+        }
+
+        Self { moves, scores }
+    }
+
+    pub fn next(&mut self) -> Option<Move> {
+        if self.moves.is_empty() {
+            return None;
+        }
+
+        let mut best_idx = 0;
+        let mut best_score = self.scores[0];
+
+        for i in 1..self.moves.len() {
+            if self.scores[i] > best_score {
+                best_score = self.scores[i];
+                best_idx = i;
+            }
+        }
+
+        self.scores.swap_remove(best_idx);
+        Some(self.moves.swap_remove(best_idx))
+    }
+}
 
 pub fn search_best_move(
     mut board: Board,
@@ -36,11 +66,13 @@ pub fn search_best_move(
     abort_flag: Arc<AtomicBool>,
     time_limit: Option<Duration>,
     quiet: bool,
+    tt: Arc<TranspositionTable>,
 ) -> Option<Move> {
     let mut best_move_so_far: Option<Move> = None;
-    let mut best_score_so_far: i32 = 0; // Track score across iterative deepening depths
-    let mut tt = TranspositionTable::new(32);
+    let mut best_score_so_far: i32 = 0;
+
     let mut hh = HistoryHierarchy::new();
+    let mut killers = [[None; 2]; 64];
     let params = EvalParams::new();
 
     let start_time = Instant::now();
@@ -53,7 +85,7 @@ pub fn search_best_move(
                 &board,
                 mv,
                 best_move_so_far,
-                &tt,
+                &killers,
                 &hh,
                 current_depth as i32,
             ))
@@ -84,8 +116,9 @@ pub fn search_best_move(
                     -beta,
                     -current_alpha,
                     1,
-                    &mut tt,
+                    &tt,
                     &mut hh,
+                    &mut killers,
                     &abort_flag,
                     start_time,
                     time_limit,
@@ -161,15 +194,15 @@ pub fn search_best_move(
     best_move_so_far
 }
 
-/// The recursive search function.
-fn negamax(
+pub fn negamax(
     board: &mut Board,
     depth: u8,
     mut alpha: i32,
     beta: i32,
     ply: i32,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     hh: &mut HistoryHierarchy,
+    killers: &mut [[Option<Move>; 2]; 64],
     abort_flag: &Arc<AtomicBool>,
     start_time: Instant,
     time_limit: Option<Duration>,
@@ -222,18 +255,19 @@ fn negamax(
         }
     }
 
-    if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > NMP_R + 1)
-    {
+    if (!in_check) && (board.occupancies[us as usize] != (pawn_bb | king_bb)) && (depth > 2) {
         if eval >= beta {
             board.make_null_move();
+            let nmp_r = 3 + (depth / 6);
             let nm_score = -negamax(
                 board,
-                depth - 1 - NMP_R,
+                depth.saturating_sub(1 + nmp_r),
                 -beta,
                 -beta + 1,
                 ply + 1,
                 tt,
                 hh,
+                killers,
                 abort_flag,
                 start_time,
                 time_limit,
@@ -257,17 +291,14 @@ fn negamax(
     if depth >= 4 && tt_move.is_none() && !in_check {
         let iid_depth = depth - 2;
         let _ = negamax(
-            board, iid_depth, alpha, beta, ply, tt, hh, abort_flag, start_time, time_limit, nodes,
-            params,
+            board, iid_depth, alpha, beta, ply, tt, hh, killers, abort_flag, start_time,
+            time_limit, nodes, params,
         );
 
         tt_move = tt.probe_move(hash);
     }
 
-    let mut moves = board.generate_all_moves();
-    moves.sort_unstable_by_key(|&mv| {
-        std::cmp::Reverse(score_move_iterative(board, mv, tt_move, tt, hh, ply))
-    });
+    let mut move_picker = MovePicker::new(board, tt_move, killers, hh, ply);
 
     let mut legal_moves = 0;
     let mut best_move: Option<Move> = None;
@@ -276,7 +307,7 @@ fn negamax(
     let mut quiet_count = 0;
     let futility_margin = 150 + (depth as i32 * 100);
 
-    for mv in moves {
+    while let Some(mv) = move_picker.next() {
         if !board.make_move(mv, params) {
             continue;
         }
@@ -322,6 +353,7 @@ fn negamax(
                 ply + 1,
                 tt,
                 hh,
+                killers,
                 abort_flag,
                 start_time,
                 time_limit,
@@ -339,6 +371,14 @@ fn negamax(
 
             if do_lmr {
                 let mut lmr_r = LMR_TABLE.get().unwrap()[depth as usize][legal_moves.min(63)];
+                let history_score = hh.read(board.side_to_move, mv);
+
+                if history_score > 1000 {
+                    lmr_r = lmr_r.saturating_sub(1);
+                } else if history_score < -1000 {
+                    lmr_r += 1;
+                }
+
                 if lmr_r >= depth {
                     lmr_r = depth - 1;
                 }
@@ -351,6 +391,7 @@ fn negamax(
                     ply + 1,
                     tt,
                     hh,
+                    killers,
                     abort_flag,
                     start_time,
                     time_limit,
@@ -367,6 +408,7 @@ fn negamax(
                         ply + 1,
                         tt,
                         hh,
+                        killers,
                         abort_flag,
                         start_time,
                         time_limit,
@@ -383,6 +425,7 @@ fn negamax(
                     ply + 1,
                     tt,
                     hh,
+                    killers,
                     abort_flag,
                     start_time,
                     time_limit,
@@ -400,6 +443,7 @@ fn negamax(
                     ply + 1,
                     tt,
                     hh,
+                    killers,
                     abort_flag,
                     start_time,
                     time_limit,
@@ -417,7 +461,14 @@ fn negamax(
 
         if score >= beta {
             tt.write(hash, depth, beta, Some(mv), TTFlag::Beta);
-            tt.write_killer(mv, ply);
+
+            if is_quiet {
+                let p = (ply as usize).min(63);
+                if killers[p][0] != Some(mv) {
+                    killers[p][1] = killers[p][0];
+                    killers[p][0] = Some(mv);
+                }
+            }
 
             if is_quiet {
                 let bonus = (depth as i32) * (depth as i32);
@@ -432,9 +483,6 @@ fn negamax(
                 }
             }
 
-            if !mv.is_capture() && !mv.is_promotion() {
-                hh.write(board.side_to_move, mv, (depth as i32) * (depth as i32));
-            }
             return beta;
         }
 
@@ -458,19 +506,18 @@ fn negamax(
     alpha
 }
 
-/// Loops through all captures to calculate tactical positions at the end of
-/// a negamax search
 fn quiescence_search(
     board: &mut Board,
     mut alpha: i32,
     beta: i32,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     params: &EvalParams,
     nodes: &mut u64,
 ) -> i32 {
     *nodes += 1;
     let hash = board.hash_history.last().copied().unwrap_or(0);
     let mut tt_move = None;
+
     if let Some(entry) = tt.read(hash, QSEARCH_DEPTH) {
         tt_move = entry.best_move;
         match entry.flag {
@@ -542,8 +589,6 @@ fn quiescence_search(
     alpha
 }
 
-/// Scores a move using the MVA-LVA (Most Valuable Victim - Least Valuable Attacker)
-/// heuristic to optimize the alpha-beta pruning
 fn score_move(board: &Board, mv: Move) -> i32 {
     if mv.is_promotion() {
         return 9000;
@@ -565,13 +610,11 @@ fn score_move(board: &Board, mv: Move) -> i32 {
     0
 }
 
-/// Helper function to sort moves for Iterative Deepening.
-/// Follows a strict hierarchy: TT Hit -> Tactics -> Killers -> History Heuristic.
 fn score_move_iterative(
     board: &Board,
     mv: Move,
     best_mv: Option<Move>,
-    tt: &TranspositionTable,
+    killers: &[[Option<Move>; 2]; 64],
     hh: &HistoryHierarchy,
     ply: i32,
 ) -> i32 {
@@ -584,16 +627,18 @@ fn score_move_iterative(
         return 100_000 + tactical_score;
     }
 
-    let killer_score = tt.read_killer(mv, ply);
-    if killer_score != 0 {
-        return killer_score;
+    if !mv.is_capture() && !mv.is_promotion() {
+        let p = (ply as usize).min(63);
+        if killers[p][0] == Some(mv) {
+            return 90000;
+        } else if killers[p][1] == Some(mv) {
+            return 80000;
+        }
     }
 
     hh.read(board.side_to_move, mv)
 }
 
-/// Pre-calculates the Late Move Reduction values for all combinations of
-/// depth and move_index to avoid floating-point math during the search.
 pub fn init_lmr_table() {
     print!("Initializing LMR values...\n");
     let mut table = [[0u8; 64]; 64];
@@ -616,8 +661,6 @@ pub fn init_lmr_table() {
     print!("Successfully Generated LMR values!\n");
 }
 
-/// Mathematically simulates the material ouctome of a sequence of captures on
-/// a single square without mutating the actual board state
 pub fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
     let mut gain: [i32; 32] = [0; 32];
 

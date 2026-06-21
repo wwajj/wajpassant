@@ -16,12 +16,15 @@ use crate::board::{Board, Color, PieceType};
 use crate::eval::EvalParams;
 use crate::moves::Move;
 use crate::search::search_best_move;
+use crate::tt::TranspositionTable;
 
 pub fn uci_loop() {
     let stdin = io::stdin();
     let params = EvalParams::new();
     let mut board = Board::default();
     board.init_eval(&params);
+
+    let tt = Arc::new(TranspositionTable::new(32));
 
     let mut abort_flag = Arc::new(AtomicBool::new(false));
     let mut search_thread: Option<thread::JoinHandle<()>> = None;
@@ -48,6 +51,8 @@ pub fn uci_loop() {
             "ucinewgame" => {
                 board = Board::default();
                 board.init_eval(&params);
+
+                tt.clear();
             }
             "position" => {
                 parse_position(&mut board, &tokens, &params);
@@ -59,7 +64,12 @@ pub fn uci_loop() {
                 }
 
                 abort_flag = Arc::new(AtomicBool::new(false));
-                search_thread = Some(parse_go(&board, &tokens, Arc::clone(&abort_flag)));
+                search_thread = Some(parse_go(
+                    &board,
+                    &tokens,
+                    Arc::clone(&abort_flag),
+                    Arc::clone(&tt),
+                ));
             }
             "stop" => {
                 abort_flag.store(true, Ordering::Relaxed);
@@ -110,8 +120,13 @@ fn parse_position(board: &mut Board, tokens: &[&str], params: &EvalParams) {
     }
 }
 
-/// Parses the "go" command, calculates time, and spawns the search thread.
-fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thread::JoinHandle<()> {
+/// Parses the "go" command, calculates time, and spawns the search thread pool.
+fn parse_go(
+    board: &Board,
+    tokens: &[&str],
+    abort_flag: Arc<AtomicBool>,
+    tt: Arc<TranspositionTable>,
+) -> thread::JoinHandle<()> {
     let mut depth: u8 = 64;
     let mut wtime: u64 = 0;
     let mut btime: u64 = 0;
@@ -178,12 +193,43 @@ fn parse_go(board: &Board, tokens: &[&str], abort_flag: Arc<AtomicBool>) -> thre
         }
     }
 
+    let num_threads = 8;
+
+    for _ in 1..num_threads {
+        let search_board = board.clone();
+        let thread_abort = Arc::clone(&abort_flag);
+        let thread_tt = Arc::clone(&tt);
+        let thread_time = allocated_time;
+
+        thread::spawn(move || {
+            let _ = search_best_move(
+                search_board,
+                depth,
+                thread_abort,
+                thread_time,
+                true,      // quiet = true
+                thread_tt, // Pass the Arc directly
+            );
+        });
+    }
+
     let search_board = board.clone();
+    let main_abort = Arc::clone(&abort_flag);
+    let main_tt = Arc::clone(&tt);
 
     thread::spawn(move || {
-        if let Some(mv) = search_best_move(search_board, depth, abort_flag, allocated_time, false) {
+        if let Some(mv) = search_best_move(
+            search_board,
+            depth,
+            Arc::clone(&main_abort),
+            allocated_time,
+            false,
+            main_tt,
+        ) {
+            main_abort.store(true, Ordering::Relaxed);
             println!("bestmove {}", format_uci_move(mv));
         } else {
+            main_abort.store(true, Ordering::Relaxed);
             println!("bestmove 0000");
         }
     })
