@@ -1,4 +1,40 @@
 use crate::moves::Move;
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// --- Custom Micro-SpinLock ---
+// Bypasses the Operating System scheduler entirely for nanosecond acquisition speeds
+pub struct SpinLock<T> {
+    locked: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+// Tell Rust it is safe to share this across threads because we manually guard it
+unsafe impl<T> Sync for SpinLock<T> {}
+
+impl<T> SpinLock<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    #[inline(always)] // Force the compiler to inline this for zero-cost abstraction
+    pub fn access<R, F: FnOnce(&mut T) -> R>(&self, f: F) -> R {
+        // Spin rapidly until we successfully flip the atomic boolean to true
+        while self.locked.swap(true, Ordering::Acquire) {
+            std::hint::spin_loop(); // Tells the CPU to optimize power while spinning
+        }
+
+        // Safely access the underlying data
+        let result = f(unsafe { &mut *self.data.get() });
+
+        // Release the lock
+        self.locked.store(false, Ordering::Release);
+        result
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum TTFlag {
@@ -16,7 +52,6 @@ pub struct TTEntry {
     pub flag: TTFlag,
 }
 
-// A blank entry to fill the table with at startup
 impl Default for TTEntry {
     fn default() -> Self {
         Self {
@@ -30,25 +65,25 @@ impl Default for TTEntry {
 }
 
 pub struct TranspositionTable {
-    pub entries: Vec<TTEntry>,
-    pub killers: [[Option<Move>; 2]; 64],
+    pub entries: Vec<SpinLock<TTEntry>>,
 }
 
 impl TranspositionTable {
-    /// Creates a new Transposition Table with a fixed number of slots.
+    /// Creates a new Lock-Free Transposition Table
     pub fn new(size_in_mb: usize) -> Self {
-        let entry_size = std::mem::size_of::<TTEntry>();
+        let entry_size = std::mem::size_of::<SpinLock<TTEntry>>();
         let num_entries = (size_in_mb * 1024 * 1024) / entry_size;
 
-        Self {
-            entries: vec![TTEntry::default(); num_entries],
-            killers: [[None; 2]; 64],
+        let mut entries = Vec::with_capacity(num_entries);
+        for _ in 0..num_entries {
+            entries.push(SpinLock::new(TTEntry::default()));
         }
+
+        Self { entries }
     }
 
-    /// Saves a position to the Transposition Table
     pub fn write(
-        &mut self,
+        &self,
         zobrist: u64,
         depth: u8,
         score: i32,
@@ -57,80 +92,48 @@ impl TranspositionTable {
     ) {
         let index = (zobrist % self.entries.len() as u64) as usize;
 
-        if depth >= self.entries[index].depth {
-            self.entries[index] = TTEntry {
-                zobrist,
-                depth,
-                score,
-                best_move,
-                flag,
+        self.entries[index].access(|entry| {
+            if depth >= entry.depth {
+                *entry = TTEntry {
+                    zobrist,
+                    depth,
+                    score,
+                    best_move,
+                    flag,
+                };
             }
-        }
+        });
     }
 
-    /// Attempts to retrieve a position from the table
-    /// Returns Some(TTEntry) if a valid, deep-enough match is found
     pub fn read(&self, zobrist: u64, depth: u8) -> Option<TTEntry> {
         let index = (zobrist % self.entries.len() as u64) as usize;
-        let entry = self.entries[index];
 
-        if entry.zobrist == zobrist {
-            if entry.depth >= depth {
-                return Some(entry);
-            };
-        }
-
-        None
+        self.entries[index].access(|entry| {
+            if entry.zobrist == zobrist && entry.depth >= depth {
+                Some(*entry)
+            } else {
+                None
+            }
+        })
     }
 
-    /// Extracts just the best move from a previous search, regardless of depth
     pub fn probe_move(&self, zobrist: u64) -> Option<Move> {
         let index = (zobrist % self.entries.len() as u64) as usize;
-        let entry = self.entries[index];
 
-        if entry.zobrist == zobrist {
-            return entry.best_move;
-        }
-
-        None
-    }
-
-    /// Clears all the entries
-    pub fn clear(&mut self) {
-        self.entries.fill(TTEntry::default());
-    }
-
-    /// Writes a killer move
-    pub fn write_killer(&mut self, mv: Move, ply: i32) {
-        if mv.is_capture() || mv.is_promotion() {
-            return;
-        }
-
-        let p = (ply as usize).min(63);
-
-        if self.killers[p][0] != Some(mv) {
-            self.killers[p][1] = self.killers[p][0];
-            self.killers[p][0] = Some(mv);
-        }
-    }
-
-    /// Reads a killer move
-    pub fn read_killer(&self, mv: Move, ply: i32) -> i32 {
-        let p = (ply as usize).min(63);
-
-        if !mv.is_capture() && !mv.is_promotion() {
-            if self.killers[p][0] == Some(mv) {
-                return 90000;
-            } else if self.killers[p][1] == Some(mv) {
-                return 80000;
+        self.entries[index].access(|entry| {
+            if entry.zobrist == zobrist {
+                entry.best_move
+            } else {
+                None
             }
-        }
-
-        0
+        })
     }
 
-    /// Clears all killer moves
-    pub fn clear_killers(&mut self) {
-        self.killers = [[None; 2]; 64]
+    pub fn clear(&self) {
+        for lock in &self.entries {
+            lock.access(|entry| {
+                *entry = TTEntry::default();
+            });
+        }
     }
 }

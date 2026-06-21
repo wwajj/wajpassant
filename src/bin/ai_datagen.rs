@@ -17,13 +17,13 @@ use wajpassant::search::negamax;
 use wajpassant::tt::TranspositionTable;
 use wajpassant::zobrist::init_zobrist;
 
+const TOTAL_GAMES: u64 = 100_000;
+
 fn main() {
     init_attacks();
     init_lmr_table();
     init_zobrist();
     println!("WajPassant Multi-Core AI Data Miner initialized.");
-
-    let total_games = 20_000;
 
     // ==========================================
     // --- THE CONSUMER (WRITER THREAD) ---
@@ -34,11 +34,12 @@ fn main() {
     let writer_thread = thread::spawn(move || {
         let mut file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open("wajpassant_training_data.txt")
             .expect("Failed to open target text data file");
 
-        let pb = ProgressBar::new(total_games as u64);
+        let pb = ProgressBar::new(TOTAL_GAMES as u64);
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} games (ETA: {eta}) | {msg}")
@@ -71,9 +72,9 @@ fn main() {
     // --- THE PRODUCERS (RAYON WORKERS) ---
     // ==========================================
 
-    // .into_par_iter() magically splits the 20,000 games across all available CPU cores.
+    // .into_par_iter() magically splits the games across all available CPU cores.
     // .for_each_with(tx) gives every thread a clone of the transmitter to send data back.
-    (0..total_games)
+    (0..TOTAL_GAMES)
         .into_par_iter()
         .for_each_with(tx, |sender, _| {
             let params = EvalParams::new();
@@ -81,7 +82,12 @@ fn main() {
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                 &params,
             );
-            let mut game_positions = Vec::new();
+
+            // 4MB is optimal for depth 7 without thrashing the system allocator across 100k loops
+            let tt = TranspositionTable::new(4);
+            let mut hh = HistoryHierarchy::new();
+            let mut killers = [[None; 2]; 64]; // Thread-local killer moves
+            let mut game_positions = Vec::with_capacity(100);
 
             let mut ply_count = 0;
             let game_result = loop {
@@ -94,7 +100,8 @@ fn main() {
                 if ply_count < 8 {
                     chosen_move = get_random_opening_move(&mut board, &params);
                 } else {
-                    chosen_move = run_search_for_datagen(&mut board, &params);
+                    chosen_move =
+                        run_search_for_datagen(&mut board, &params, &tt, &mut hh, &mut killers);
                 }
 
                 if chosen_move.is_none() {
@@ -115,7 +122,10 @@ fn main() {
                 let mv = chosen_move.unwrap();
 
                 if ply_count >= 8 && board.phase > 4 {
-                    let eval = board.evaluate(-50000, 50000, &params);
+                    let mut eval = board.evaluate(-50000, 50000, &params);
+                    if board.side_to_move == Color::Black {
+                        eval = -eval;
+                    }
                     game_positions.push((board.to_fen(), eval));
                 }
 
@@ -124,7 +134,7 @@ fn main() {
             };
 
             // Format the entire game's data into a single String block
-            let mut game_data_block = String::new();
+            let mut game_data_block = String::with_capacity(8192);
             for (fen, eval) in game_positions.iter() {
                 game_data_block.push_str(&format!("{} | {} | {}\n", fen, eval, game_result));
             }
@@ -172,35 +182,37 @@ fn get_random_opening_move(board: &mut Board, params: &EvalParams) -> Option<Mov
 }
 
 /// Executes a fixed depth 7 search using your core Negamax engine stack
-fn run_search_for_datagen(board: &mut Board, params: &EvalParams) -> Option<Move> {
-    // 1. Initialize local tables for this specific game/move
-    let mut tt = TranspositionTable::new(16); // 16MB is plenty for a shallow fixed-depth search
-    let mut hh = HistoryHierarchy::new();
+fn run_search_for_datagen(
+    board: &mut Board,
+    params: &EvalParams,
+    tt: &TranspositionTable, // Lock-free, passed as read-only reference
+    hh: &mut HistoryHierarchy,
+    killers: &mut [[Option<Move>; 2]; 64], // Newly required local array
+) -> Option<Move> {
+    hh.clear();
+    *killers = [[None; 2]; 64];
 
-    // 2. Dummy abort flag
     let abort_flag = Arc::new(AtomicBool::new(false));
-
     let mut best_move: Option<Move> = None;
-    let target_depth = 7; // Depth 7 is the sweet spot for datagen speed vs. quality
+    let target_depth = 7;
 
-    // 3. Iterative Deepening Loop
     for depth in 1..=target_depth {
         let _score = negamax(
             board,
             depth,
             -50000,
             50000,
-            0, // ply
-            &mut tt,
-            &mut hh,
+            0,
+            tt,
+            hh,
+            killers, // Pass local array down the tree
             &abort_flag,
             std::time::Instant::now(),
-            None,   // No time limit
-            &mut 0, // Node counter
+            None,
+            &mut 0,
             params,
         );
 
-        // Grab the best move found at this depth from the TT
         if let Some(tt_move) = tt.probe_move(board.calculate_hash()) {
             best_move = Some(tt_move);
         }

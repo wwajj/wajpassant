@@ -1,4 +1,5 @@
 /target
 /src/debug
+src/wajpassant_training_data.txt
 ./.DS_Store
-/src/bin/wajpassant_training_data.txt
+./config.json

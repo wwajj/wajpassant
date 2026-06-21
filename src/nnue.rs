@@ -1,10 +1,11 @@
 //! The NNUE (Efficiently Updatable Neural Network) module.
 
+use std::alloc::{Layout, alloc_zeroed};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufReader, Read, Result};
 use std::sync::OnceLock;
 
-use crate::bitboard::{Bitboard, Square};
+use crate::bitboard::{Bitboard, SQUARES, Square};
 use crate::board::{Color, PieceType};
 
 // The standard size of the HalfKP hidden layer
@@ -81,26 +82,36 @@ impl NNUEState {
         let w_king = pieces[Color::White as usize][PieceType::King as usize].get_lsb();
         let b_king = pieces[Color::Black as usize][PieceType::King as usize].get_lsb();
 
+        let b_king_flipped = (b_king as usize ^ 56) as usize;
+
         for side in 0..2 {
             let piece_color = if side == 0 {
                 Color::White
             } else {
                 Color::Black
             };
+
             for pt_idx in 0..5 {
                 let pt = PieceType::from_index(pt_idx).unwrap();
                 let mut bb = pieces[side][pt_idx];
 
                 while bb.0 != 0 {
                     let sq = bb.pop_lsb();
+
                     if let Some(w_idx) =
                         NNUEWeights::get_feature_index(w_king, Color::White, sq, piece_color, pt)
                     {
                         self.white_acc.add_feature(weights, w_idx);
                     }
-                    if let Some(b_idx) =
-                        NNUEWeights::get_feature_index(b_king, Color::Black, sq, piece_color, pt)
-                    {
+
+                    let sq_flipped = (sq as usize ^ 56) as usize;
+                    if let Some(b_idx) = NNUEWeights::get_feature_index(
+                        SQUARES[b_king_flipped],
+                        Color::Black,
+                        SQUARES[sq_flipped],
+                        piece_color,
+                        pt,
+                    ) {
                         self.black_acc.add_feature(weights, b_idx);
                     }
                 }
@@ -144,66 +155,74 @@ impl NNUEWeights {
     /// Loads a compiled NNUE binary file from the disk and populates the global network.
     /// Returns true if successful, false if the file was not found or invalid.
     pub fn load_from_file(path: &str) -> bool {
-        println!("Attempting to load NNUE network from {}...", path);
+        println!(
+            "info string Attempting to load NNUE network from {}...",
+            path
+        );
 
-        let mut file = match File::open(path) {
+        let file = match File::open(path) {
             Ok(f) => f,
             Err(_) => {
-                println!("Warning: NNUE file not found. Falling back to classical evaluation.");
+                println!(
+                    "info string Warning: NNUE file not found. Falling back to classical evaluation."
+                );
                 return false;
             }
         };
 
+        // Wrap the raw file in an 8MB memory buffer
+        let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+
         let mut weights = unsafe {
-            let layout = std::alloc::Layout::new::<NNUEWeights>();
-            let ptr = std::alloc::alloc_zeroed(layout) as *mut NNUEWeights;
+            let layout = Layout::new::<NNUEWeights>();
+            let ptr = alloc_zeroed(layout) as *mut NNUEWeights;
             Box::from_raw(ptr)
         };
 
-        let read_i16 = |f: &mut std::fs::File| -> std::io::Result<i16> {
+        let read_i16 = |r: &mut BufReader<File>| -> Result<i16> {
             let mut buf = [0u8; 2];
-            f.read_exact(&mut buf)?;
+            Read::read_exact(r, &mut buf)?;
             Ok(i16::from_le_bytes(buf))
         };
 
-        let read_i32 = |f: &mut std::fs::File| -> std::io::Result<i32> {
+        let read_i32 = |r: &mut BufReader<File>| -> Result<i32> {
             let mut buf = [0u8; 4];
-            f.read_exact(&mut buf)?;
+            Read::read_exact(r, &mut buf)?;
             Ok(i32::from_le_bytes(buf))
         };
 
         for i in 0..(INPUT_FEATURES * HIDDEN_LAYER_SIZE) {
-            match read_i16(&mut file) {
+            match read_i16(&mut reader) {
                 Ok(val) => weights.feature_weights[i] = val,
                 Err(_) => return false,
             }
         }
 
         for i in 0..HIDDEN_LAYER_SIZE {
-            match read_i16(&mut file) {
+            match read_i16(&mut reader) {
                 Ok(val) => weights.feature_biases[i] = val,
                 Err(_) => return false,
             }
         }
 
         for i in 0..(HIDDEN_LAYER_SIZE * 2) {
-            match read_i16(&mut file) {
+            match read_i16(&mut reader) {
                 Ok(val) => weights.output_weights[i] = val,
                 Err(_) => return false,
             }
         }
 
-        match read_i32(&mut file) {
+        match read_i32(&mut reader) {
             Ok(val) => weights.output_bias = val,
             Err(_) => return false,
         }
 
         if GLOBAL_WEIGHTS.set(weights).is_err() {
-            println!("Error: Tried to load NNUE weights more than once.");
+            println!("info string Error: Tried to load NNUE weights more than once.");
             return false;
         }
 
-        println!("NNUE Network successfully loaded and verified.");
+        println!("info string NNUE Network successfully loaded and verified.");
         true
     }
 }
@@ -224,7 +243,7 @@ pub fn evaluate_nnue(state: &NNUEState, side_to_move: Color, weights: &NNUEWeigh
     }
 
     for i in 0..HIDDEN_LAYER_SIZE {
-        let activated = inactive_acc.values[i].clamp(0, 127) as i32;
+        let activated = inactive_acc.values[i].clamp(0, 255) as i32;
         output += activated * (weights.output_weights[HIDDEN_LAYER_SIZE + i] as i32);
     }
 

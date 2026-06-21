@@ -11,7 +11,7 @@ use crate::attacks::{
     get_rook_attacks,
 };
 use crate::bitboard::{Bitboard, NOT_A_FILE, NOT_H_FILE, SQUARES, Square};
-use crate::eval::EvalParams;
+use crate::eval::{EvalParams, MAX_PHASE, PHASE_WEIGHTS};
 use crate::movegen::{SIXTH_RANK, THIRD_RANK};
 use crate::moves::*;
 use crate::nnue::{GLOBAL_WEIGHTS, NNUEState, NNUEWeights, evaluate_nnue};
@@ -215,6 +215,11 @@ impl Default for Board {
         let initial_hash = board.calculate_hash();
         board.hash_history.push(initial_hash);
 
+        if let Some(weights) = crate::nnue::GLOBAL_WEIGHTS.get() {
+            board.current_nnue.refresh(&board.pieces, weights);
+        }
+        board.init_eval(&EvalParams::new());
+
         board
     }
 }
@@ -332,6 +337,7 @@ impl Board {
         if let Some(weights) = GLOBAL_WEIGHTS.get() {
             board.current_nnue.refresh(&board.pieces, weights);
         }
+        board.init_eval(&EvalParams::new());
 
         let initial_hash = board.calculate_hash();
         board.hash_history.push(initial_hash);
@@ -623,27 +629,43 @@ impl Board {
             let w_king = self.pieces[Color::White as usize][PieceType::King as usize].get_lsb();
             let b_king = self.pieces[Color::Black as usize][PieceType::King as usize].get_lsb();
 
+            let b_king_flipped = (b_king as usize ^ 56) as usize;
+
             if moved != PieceType::King {
+                // 1. Remove piece from start square
                 if let Some(w_idx) =
                     NNUEWeights::get_feature_index(w_king, Color::White, start, us, moved)
                 {
                     self.current_nnue.white_acc.remove_feature(weights, w_idx);
                 }
-                if let Some(b_idx) =
-                    NNUEWeights::get_feature_index(b_king, Color::Black, start, us, moved)
-                {
+
+                let start_flipped = (start as usize ^ 56) as usize;
+                if let Some(b_idx) = NNUEWeights::get_feature_index(
+                    SQUARES[b_king_flipped],
+                    Color::Black,
+                    SQUARES[start_flipped],
+                    us,
+                    moved,
+                ) {
                     self.current_nnue.black_acc.remove_feature(weights, b_idx);
                 }
 
+                // 2. Handle captures
                 if let Some(cap_pt) = captured {
                     if let Some(w_idx) =
                         NNUEWeights::get_feature_index(w_king, Color::White, target, them, cap_pt)
                     {
                         self.current_nnue.white_acc.remove_feature(weights, w_idx);
                     }
-                    if let Some(b_idx) =
-                        NNUEWeights::get_feature_index(b_king, Color::Black, target, them, cap_pt)
-                    {
+
+                    let target_flipped = (target as usize ^ 56) as usize;
+                    if let Some(b_idx) = NNUEWeights::get_feature_index(
+                        SQUARES[b_king_flipped],
+                        Color::Black,
+                        SQUARES[target_flipped],
+                        them,
+                        cap_pt,
+                    ) {
                         self.current_nnue.black_acc.remove_feature(weights, b_idx);
                     }
                 } else if flag == FLAG_EN_PASSANT {
@@ -652,6 +674,7 @@ impl Board {
                     } else {
                         target as usize + 8
                     };
+
                     if let Some(w_idx) = NNUEWeights::get_feature_index(
                         w_king,
                         Color::White,
@@ -661,10 +684,12 @@ impl Board {
                     ) {
                         self.current_nnue.white_acc.remove_feature(weights, w_idx);
                     }
+
+                    let cap_sq_flipped = (cap_sq ^ 56) as usize;
                     if let Some(b_idx) = NNUEWeights::get_feature_index(
-                        b_king,
+                        SQUARES[b_king_flipped],
                         Color::Black,
-                        SQUARES[cap_sq],
+                        SQUARES[cap_sq_flipped],
                         them,
                         PieceType::Pawn,
                     ) {
@@ -672,19 +697,27 @@ impl Board {
                     }
                 }
 
+                // 3. Add piece to target
                 let final_pt = if mv.is_promotion() {
                     mv.get_promotion_piece().unwrap()
                 } else {
                     moved
                 };
+
                 if let Some(w_idx) =
                     NNUEWeights::get_feature_index(w_king, Color::White, target, us, final_pt)
                 {
                     self.current_nnue.white_acc.add_feature(weights, w_idx);
                 }
-                if let Some(b_idx) =
-                    NNUEWeights::get_feature_index(b_king, Color::Black, target, us, final_pt)
-                {
+
+                let target_flipped = (target as usize ^ 56) as usize;
+                if let Some(b_idx) = NNUEWeights::get_feature_index(
+                    SQUARES[b_king_flipped],
+                    Color::Black,
+                    SQUARES[target_flipped],
+                    us,
+                    final_pt,
+                ) {
                     self.current_nnue.black_acc.add_feature(weights, b_idx);
                 }
             }
@@ -1205,13 +1238,13 @@ impl Board {
                     self.mg_score += sign * (params.material_mg[pt] + params.pst_mg[pt][lookup_sq]);
                     self.eg_score += sign * (params.material_eg[pt] + params.pst_eg[pt][lookup_sq]);
 
-                    self.phase += crate::eval::PHASE_WEIGHTS[pt];
+                    self.phase += PHASE_WEIGHTS[pt];
                 }
             }
         }
 
-        if self.phase > crate::eval::MAX_PHASE {
-            self.phase = crate::eval::MAX_PHASE;
+        if self.phase > MAX_PHASE {
+            self.phase = MAX_PHASE;
         }
     }
 
@@ -1220,7 +1253,7 @@ impl Board {
         if let Some(weights) = GLOBAL_WEIGHTS.get() {
             return evaluate_nnue(&self.current_nnue, self.side_to_move, weights);
         }
-        let p = self.phase.min(crate::eval::MAX_PHASE);
+        let p = self.phase.min(MAX_PHASE);
 
         let mut bonus = 0;
         if self.has_castled(Color::White) {
@@ -1239,9 +1272,7 @@ impl Board {
             }
         }
 
-        let mut score = ((self.mg_score * p + self.eg_score * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE)
-            + bonus;
+        let mut score = ((self.mg_score * p + self.eg_score * (MAX_PHASE - p)) / MAX_PHASE) + bonus;
         let perspective_base = if self.side_to_move == Color::White {
             score
         } else {
@@ -1275,12 +1306,10 @@ impl Board {
             black_mobility_mg += b_count * params.mobility_mg[pt];
             black_mobility_eg += b_count * params.mobility_eg[pt];
         }
-        let w_mob_tapered = (white_mobility_mg * p
-            + white_mobility_eg * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE;
-        let b_mob_tapered = (black_mobility_mg * p
-            + black_mobility_eg * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE;
+        let w_mob_tapered =
+            (white_mobility_mg * p + white_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
+        let b_mob_tapered =
+            (black_mobility_mg * p + black_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
 
         score += w_mob_tapered - b_mob_tapered;
 
@@ -1294,7 +1323,7 @@ impl Board {
     /// Forces a complete recalculation of the evaluation from scratch.
     /// Used exclusively by the Texel Tuner to bypass incremental updates/
     pub fn evaluate_from_scratch(&self, params: &EvalParams) -> i32 {
-        let p = self.phase.min(crate::eval::MAX_PHASE);
+        let p = self.phase.min(MAX_PHASE);
 
         let mut dynamic_mg_score = 0;
         let mut dynamic_eg_score = 0;
@@ -1339,9 +1368,8 @@ impl Board {
             }
         }
 
-        let mut score = ((dynamic_mg_score * p + dynamic_eg_score * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE)
-            + bonus;
+        let mut score =
+            ((dynamic_mg_score * p + dynamic_eg_score * (MAX_PHASE - p)) / MAX_PHASE) + bonus;
 
         let mut white_mobility_mg = 0;
         let mut white_mobility_eg = 0;
@@ -1361,12 +1389,10 @@ impl Board {
             black_mobility_eg += b_count * params.mobility_eg[pt];
         }
 
-        let w_mob_tapered = (white_mobility_mg * p
-            + white_mobility_eg * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE;
-        let b_mob_tapered = (black_mobility_mg * p
-            + black_mobility_eg * (crate::eval::MAX_PHASE - p))
-            / crate::eval::MAX_PHASE;
+        let w_mob_tapered =
+            (white_mobility_mg * p + white_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
+        let b_mob_tapered =
+            (black_mobility_mg * p + black_mobility_eg * (MAX_PHASE - p)) / MAX_PHASE;
 
         score += w_mob_tapered - b_mob_tapered;
 
@@ -1390,7 +1416,7 @@ impl Board {
 
         self.mg_score += sign * (params.material_mg[pt_idx] + params.pst_mg[pt_idx][lookup_sq]);
         self.eg_score += sign * (params.material_eg[pt_idx] + params.pst_eg[pt_idx][lookup_sq]);
-        self.phase += crate::eval::PHASE_WEIGHTS[pt_idx];
+        self.phase += PHASE_WEIGHTS[pt_idx];
     }
 
     /// Incrementally removes a piece's value from the global board evaluation.
@@ -1406,7 +1432,7 @@ impl Board {
 
         self.mg_score -= sign * (params.material_mg[pt_idx] + params.pst_mg[pt_idx][lookup_sq]);
         self.eg_score -= sign * (params.material_eg[pt_idx] + params.pst_eg[pt_idx][lookup_sq]);
-        self.phase -= crate::eval::PHASE_WEIGHTS[pt_idx];
+        self.phase -= PHASE_WEIGHTS[pt_idx];
     }
 
     /// Generates all possible moves that involve a capture

@@ -8,11 +8,15 @@ use crate::board::{Board, Color, PieceType};
 use crate::eval::EvalParams;
 use crate::moves::Move;
 use crate::search::search_best_move;
+use crate::tt::TranspositionTable;
 
 pub fn cli_loop() {
     let params = EvalParams::new();
     let mut board = Board::default();
     board.init_eval(&params);
+
+    // Initialize the Transposition Table wrapped in an Arc
+    let tt = Arc::new(TranspositionTable::new(32));
 
     println!("WajPassant CLI");
     print!("Do you want to play as White (w) or Black (b)? ");
@@ -54,7 +58,10 @@ pub fn cli_loop() {
         } else {
             let abort_flag = Arc::new(AtomicBool::new(false));
 
-            if let Some(best_move) = search_best_move(board.clone(), 7, abort_flag, None, false) {
+            // Clone the Arc to pass it into the search function safely
+            if let Some(best_move) =
+                search_best_move(board.clone(), 7, abort_flag, None, false, Arc::clone(&tt))
+            {
                 println!("WajPassant plays: {}", format_move(best_move));
                 board.make_move(best_move, &params); // Actually update the CLI board state
             } else {

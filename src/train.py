@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -19,15 +20,17 @@ class WajPassantNNUE(nn.Module):
         self.output_layer = nn.Linear(512, 1)
 
     def forward(self, active_features, inactive_features):
-        # Pass inputs through the first layer and apply Clipped ReLU (clamp 0 to 1)
-        acc_active = torch.clamp(self.feature_layer(active_features), 0.0, 1.0)
-        acc_inactive = torch.clamp(self.feature_layer(inactive_features), 0.0, 1.0)
+        QA = 255.0
 
-        # Concatenate the active and inactive accumulators
+        scaled_active = self.feature_layer(active_features) * QA
+        scaled_inactive = self.feature_layer(inactive_features) * QA
+
+        acc_active = torch.clamp(scaled_active, 0.0, QA)
+        acc_inactive = torch.clamp(scaled_inactive, 0.0, QA)
+
         combined = torch.cat([acc_active, acc_inactive], dim=1)
 
-        # Calculate final centipawn score
-        return self.output_layer(combined)
+        return self.output_layer(combined) / QA
 
 
 # ==========================================
@@ -50,10 +53,6 @@ class ChessDataset(Dataset):
         return len(self.data)
 
     def get_feature_index(self, king_sq, king_color, piece_sq, piece_color, pt_char):
-        """
-        A 1-to-1 Python translation of the Rust get_feature_index function.
-        """
-        # Assuming standard Rust Enum order: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
         pt_map = {"p": 0, "n": 1, "b": 2, "r": 3, "q": 4}
         pt_idx = pt_map[pt_char]
 
@@ -63,19 +62,15 @@ class ChessDataset(Dataset):
         return (king_sq * 640) + piece_feature
 
     def fen_to_features(self, fen):
-        """
-        Translates a FEN string into the White and Black HalfKP accumulators.
-        """
         white_acc = torch.zeros(41024)
         black_acc = torch.zeros(41024)
 
         board_state = fen.split(" ")[0]
         side_to_move = fen.split(" ")[1]
 
-        # 1. Map FEN to standard 0-63 squares (A1 = 0, H8 = 63)
         pieces = []
-        rank = 7  # FEN starts at Rank 8 (index 7)
-        file = 0  # FEN starts at File A (index 0)
+        rank = 7
+        file = 0
 
         for char in board_state:
             if char == "/":
@@ -88,29 +83,29 @@ class ChessDataset(Dataset):
                 pieces.append((char, sq))
                 file += 1
 
-        # 2. Locate the Kings
         wk_sq = next((sq for p, sq in pieces if p == "K"), None)
         bk_sq = next((sq for p, sq in pieces if p == "k"), None)
 
-        # 3. Populate Accumulators
         for p, sq in pieces:
             pt_char = p.lower()
-            if pt_char == "k":  # Ignore kings as per Rust logic
+            if pt_char == "k":
                 continue
 
             piece_color = "w" if p.isupper() else "b"
 
-            # White's perspective
             if wk_sq is not None:
                 w_idx = self.get_feature_index(wk_sq, "w", sq, piece_color, pt_char)
                 white_acc[w_idx] = 1.0
 
-            # Black's perspective
             if bk_sq is not None:
-                b_idx = self.get_feature_index(bk_sq, "b", sq, piece_color, pt_char)
+                b_king_flipped = bk_sq ^ 56
+                sq_flipped = sq ^ 56
+
+                b_idx = self.get_feature_index(
+                    b_king_flipped, "b", sq_flipped, piece_color, pt_char
+                )
                 black_acc[b_idx] = 1.0
 
-        # 4. Assign Active/Inactive based on whose turn it is
         if side_to_move == "w":
             return white_acc, black_acc
         else:
@@ -122,16 +117,12 @@ class ChessDataset(Dataset):
 
         side_to_move = fen.split(" ")[1]
 
-        # Convert absolute result (1.0 = White wins) to relative result
         if side_to_move == "b":
             relative_result = 1.0 - result
         else:
             relative_result = result
 
-        # Map relative result (0 to 1) into the same scale as the eval (-1 to 1)
         wdl_score = (relative_result - 0.5) * 2.0
-
-        # Target blend (Eval + WDL)
         target_val = (eval_score / 400.0) * 0.5 + (wdl_score) * 0.5
 
         target = torch.tensor([target_val], dtype=torch.float32)
@@ -148,24 +139,19 @@ def export_to_bin(model, filename="wajpassant.bin"):
     QB = 64.0
 
     with open(filename, "wb") as f:
-        # 1. Feature Weights [41024 * 256] -> i16
         fw = model.feature_layer.weight.detach().transpose(0, 1)
         fw_quantized = torch.clamp(torch.round(fw * QA), -32768, 32767).to(torch.int16)
         f.write(fw_quantized.cpu().numpy().tobytes())
 
-        # 2. Feature Biases [256] -> i16
         fb = model.feature_layer.bias.detach()
         fb_quantized = torch.clamp(torch.round(fb * QA), -32768, 32767).to(torch.int16)
         f.write(fb_quantized.cpu().numpy().tobytes())
 
-        # 3. Output Weights [512] -> i16
         ow = model.output_layer.weight.detach().transpose(0, 1)
         ow_quantized = torch.clamp(torch.round(ow * QB), -32768, 32767).to(torch.int16)
         f.write(ow_quantized.cpu().numpy().tobytes())
 
-        # 4. Output Bias [1] -> i32
         ob = model.output_layer.bias.detach()
-        # Ensure we only grab the first scalar value if bias is shaped as [1]
         if ob.numel() == 1:
             ob = ob[0]
         ob_quantized = torch.clamp(
@@ -184,28 +170,39 @@ if __name__ == "__main__":
     print(f"Igniting training sequence on: {device}")
 
     model = WajPassantNNUE().to(device)
-    dataset = ChessDataset("bin/wajpassant_training_data.txt")
+    dataset = ChessDataset("wajpassant_training_data.txt")
 
-    # Massive batches for Apple Silicon
-    dataloader = DataLoader(dataset, batch_size=8192, shuffle=True)
+    # HIGH-PERFORMANCE UPDATES: Multi-threaded staging & Unified Pinned Memory
+    dataloader = DataLoader(
+        dataset,
+        batch_size=8192,
+        shuffle=True,
+        num_workers=8,  # Parallelizes string parsing across 4 CPU cores
+        pin_memory=False,
+        persistent_workers=True,  # Prevents recreating CPU threads at every epoch step
+    )
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    EPOCHS = 5
+    # Regularized AdamW to smoothly control hidden layer parameter spaces
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+
+    EPOCHS = 50
+    # Cosine Annealing Learning Rate Scheduler
+    scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
 
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0.0
 
-        # --- TQDM PROGRESS BAR WRAPPER ---
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{EPOCHS}", unit="batch")
 
         for active, inactive, target in progress_bar:
+            # non_blocking=True allows streaming transfers to overlap with GPU compute steps
             active, inactive, target = (
-                active.to(device),
-                inactive.to(device),
-                target.to(device),
+                active.to(device, non_blocking=True),
+                inactive.to(device, non_blocking=True),
+                target.to(device, non_blocking=True),
             )
 
             optimizer.zero_grad()
@@ -215,12 +212,14 @@ if __name__ == "__main__":
             optimizer.step()
 
             total_loss += loss.item()
-
-            # Dynamically update the suffix of the progress bar with the live loss
             progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
+        # Move the learning rate scheduler down one step per epoch
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
+
         print(
-            f"--- Epoch {epoch+1} Complete. Average Loss: {total_loss/len(dataloader):.4f} ---\n"
+            f"--- Epoch {epoch+1} Complete. Avg Loss: {total_loss/len(dataloader):.4f} | LR: {current_lr:.2e} ---\n"
         )
 
     export_to_bin(model, "wajpassant.bin")
