@@ -1,38 +1,45 @@
 # WajPassant
 
-A high-performance, UCI-compatible chess engine written in Rust. WajPassant features a highly optimized bitboard board representation and a custom-built, parallelized Texel Tuner that uses supervised machine learning to independently derive advanced positional chess intuition.
+A high-performance, UCI-compatible chess engine written in Rust. WajPassant is built around a custom **NNUE (Efficiently Updatable Neural Network)** and a deeply optimized, lock-free search architecture. It leverages self-play Reinforcement Learning (Expert Iteration) to continuously bootstrap its own tactical and positional intuition.
 
-**Current Strength:** ~2030 Elo *(Calibrated via `cutechess-cli` against handicapped Stockfish-2000)*
+**Current Strength:** ~2280 - 2300 Elo *(National Master level, calibrated via fastchess against unhandicapped 2000+ Elo benchmarks)*
+
+---
 
 ## Key Features
 
-### Core Engine & Architecture
-* **Bitboard Representation:** Fast and efficient 64-bit integer board representation for piece tracking and move generation.
-* **Zobrist Hashing:** Fast position fingerprinting for transpositions and state tracking.
-* **UCI Protocol Support:** Fully compatible with modern chess GUIs (CuteChess, Arena, En Croissant, etc.).
-* **Pre-calculated Lookup Tables:** Generates Attack and LMR (Late Move Reduction) tables at runtime for blazing-fast search speeds.
+### Advanced Search Architecture
+* **Lazy SMP (Symmetric Multiprocessing):** Multi-threaded search leveraging multi-core CPUs via a dedicated thread pool. Threads explore the tree independently while sharing discoveries instantly.
+* **Lock-Free Transposition Table:** A custom micro-spinlock array implementation for the TT, completely eliminating OS scheduler bottlenecks and enabling millions of nodes per second (NPS) across threads without lock contention.
+* **$O(1)$ MovePicker:** Lazy move selection using zero-allocation swap-remove mechanisms to prioritize TT hits, tactical captures, and killer moves instantly.
+* **Thread-Local Heuristics:** Thread-isolated Killer Moves and History Hierarchy arrays to prevent global lock gridlock and ensure branch-specific accuracy.
 
-### Static Evaluation
-The engine's evaluation function relies on mathematically derived knowledge rather than hardcoded human guesses:
-* **Tapered Evaluation:** Smooth, phase-based interpolation between Midgame (MG) and Endgame (EG) states.
-* **Piece-Square Tables (PSTs):** 768 parameters dictating piece placement bonuses/penalties, optimized for perfect horizontal symmetry.
-* **Dynamic Material Weights:** Tuned piece values that reflect their true mathematical worth in different phases (e.g., valuing the Bishop pair in open endgames).
-* **Positional Heuristics:** Mobility counting and castling right bonuses.
+### Pruning & Search Heuristics
+* **Dynamic Null Move Pruning (NMP):** Scales reduction depth dynamically based on the current search depth to prune useless branches without suffering from tactical blindness.
+* **History-Informed LMR (Late Move Reductions):** Integrates with the History Heuristic to dynamically adjust reductions for quiet moves based on their historical beta-cutoff success.
+* **Quiescence Search & SEE:** Deep tactical resolution using MVV-LVA (Most Valuable Victim - Least Valuable Attacker) and Static Exchange Evaluation (SEE) to mathematically simulate material outcomes without mutating the board state.
 
-### The Texel Tuner Pipeline
-WajPassant includes a custom-built optimization environment to train the engine's evaluation parameters on datasets of hundreds of thousands of games (e.g., UHO datasets).
-* **Rayon-Parallelized MSE Calculation:** Evaluates millions of positions across all CPU cores in milliseconds.
-* **Coordinate Descent Optimization:** Iteratively nudges weights to minimize Mean Squared Error against dataset outcomes.
-* **Perspective-Corrected Objective:** Automatically maps absolute game outcomes to side-to-move perspectives using a Logistic Sigmoid function.
-* **Automated Bootstrapping:** Capable of self-play generation (`generate_data.rs`) to continuously feed higher-quality datasets back into the tuner.
+### Neural Network Evaluation (NNUE)
+* **Custom NNUE Backend:** Replaced classical static evaluation and Piece-Square Tables with a custom neural network loaded at runtime (`wajpassant.bin`), providing profound positional understanding, King safety evaluation, and complex material imbalance resolution.
+* **Tapered Integration:** Flawlessly scales evaluation profiles from complex middlegames down to deep endgames.
+
+### Reinforcement Learning Pipeline (Expert Iteration)
+WajPassant includes a custom-built, Rayon-parallelized data mining environment designed to bootstrap intelligence via self-play:
+* **Multi-Core AI Data Miner (`ai_datagen.rs`):** Orchestrates thousands of simultaneous self-play games at high search depths to generate high-quality datasets.
+* **Expert Iteration:** The engine uses its heavily optimized search tree (the "Expert") to discover deep tactical truths, extracting millions of quiet positions. These positions are then used to train the next generation of the NNUE (the "Apprentice"), pushing the engine's Elo exponentially higher with each iteration.
+
+---
 
 ## Project Structure
 
 WajPassant is structured as a multi-binary Cargo workspace:
 
-* `src/main.rs`: The primary UCI chess engine binary.
-* `src/bin/tuner.rs`: The Texel Tuner execution script. Reads `dataset.txt`, runs Coordinate Descent, and outputs optimized Rust arrays to `pst.txt`.
-* `src/bin/generate_data.rs`: The self-play dataset generator used for reinforcement learning.
+* `src/main.rs`: The primary engine binary, handling both the standard UCI loop and direct terminal CLI play.
+* `src/search.rs` & `src/tt.rs`: The core of the engine, featuring the Negamax alpha-beta search, pruning heuristics, and the lock-free Transposition Table.
+* `src/bin/ai_datagen.rs`: The heavily parallelized self-play data miner used for generating NNUE training datasets.
+* `wajpassant.bin`: The compiled NNUE network weights loaded by the engine at runtime.
+
+---
 
 ## Installation & Usage
 
@@ -45,12 +52,12 @@ cd wajpassant
 cargo build --release
 ```
 
-### Running the engine
-To start the engine in UCI mode (for testing in the terminal or plugging into a GUI):
+### Running the Engine
+To start the engine in UCI mode (for testing in the terminal or plugging into a GUI like CuteChess, Arena, or En Croissant):
 ```bash
 cargo run --release
 ```
-Alternatively, to play against the engine using the CLI:
+Alternatively, to play against the engine directly in your terminal:
 ```bash
-cargo run --release --cli
+cargo run --release -- --cli
 ```
